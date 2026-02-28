@@ -1,0 +1,2 @@
+# Kubernetes secrets (contain credentials)
+k8s/**/secret.yaml
