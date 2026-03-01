@@ -78,21 +78,90 @@ kubectl apply -f argocd/app-of-apps.yaml
 ArgoCD автоматически синхронизирует: sealed-secrets, minio, mlflow, airflow, serving.
 Sealed Secrets контроллер расшифрует SealedSecrets → создаст обычные Secrets → поды подхватят.
 
-## 6. ML-образы и CI/CD
+## 6. NYC Taxi Pipeline (Phase 1)
 
-**Автоматическая сборка**: push в main `root/water-quality-model` → Gitea Actions
-собирает `water-quality-model:sha-XXXXXXX` и `water-quality-serving:sha-XXXXXXX` (+ `:latest`).
+### 6.1 Создать репозиторий и MinIO buckets
 
-**Деплой**: кнопка "Run Workflow" на `deploy.yaml` в Gitea UI
-(или API: `POST /api/v1/repos/root/water-quality-model/actions/workflows/deploy.yaml/dispatches`)
-→ обновляет image tag в `serving/serving.yaml` → ArgoCD синхронизирует.
-
-**Настройка CI (один раз)**:
 ```bash
-# Создать API token
+# Создать repo в Gitea
+curl -s -u root:root -X POST 'http://gitea.local:3000/api/v1/user/repos' \
+  -H 'Content-Type: application/json' -d '{"name":"nyc-taxi-model","auto_init":true}'
+
+# Включить Actions: Gitea UI → repo → Settings → Advanced → Actions → Enable
+
+# MinIO buckets (через mc или Console http://minio.local:30448)
+# Buckets: taxi-raw, taxi-streaming, taxi-processed — создаются автоматически скриптами
+```
+
+### 6.2 Сборка образов
+
+Образы собираются автоматически CI/CD (`.gitea/workflows/build.yaml`) на push в main.
+После push в `root/nyc-taxi-model` → Gitea Actions соберёт `nyc-taxi-model:latest` и `nyc-taxi-serving:latest`.
+
+Включить Actions для repo: Gitea UI → repo → Settings → Advanced → Actions → Enable.
+
+### 6.3 Скачать данные NYC Taxi
+
+```bash
+# Запустить pod для скачивания (или локально):
+kubectl run taxi-download --rm -it --restart=Never \
+  --image=nyc-taxi-model:latest --image-pull-policy=Never \
+  -n training --serviceaccount=workflow-sa \
+  --env="MLFLOW_S3_ENDPOINT_URL=http://minio.minio.svc.cluster.local:9000" \
+  --env="AWS_ACCESS_KEY_ID=minioadmin" \
+  --env="AWS_SECRET_ACCESS_KEY=minioadmin" \
+  -- python src/download_data.py
+
+# Для drift demo (July data):
+kubectl run taxi-download-july --rm -it --restart=Never \
+  --image=nyc-taxi-model:latest --image-pull-policy=Never \
+  -n training --serviceaccount=workflow-sa \
+  --env="MLFLOW_S3_ENDPOINT_URL=http://minio.minio.svc.cluster.local:9000" \
+  --env="AWS_ACCESS_KEY_ID=minioadmin" \
+  --env="AWS_SECRET_ACCESS_KEY=minioadmin" \
+  --env="MONTHS=2024-07" \
+  -- python src/download_data.py
+```
+
+### 6.4 Запуск pipeline
+
+1. **Simulator**: включить DAG `taxi_simulator` в Airflow UI → каждую минуту batch в `taxi-streaming/`
+2. **Training**: запустить DAG `taxi_train_duration` (manual trigger) → preprocess → train → MLflow
+3. **Serving**: ArgoCD синхронизирует `serving/serving.yaml` → pod `taxi-serving-api`
+
+### 6.5 Проверка
+
+```bash
+# Simulator работает (проверить MinIO Console: taxi-streaming/)
+# Модель в MLflow: http://mlflow.local:30448 → Experiment nyc-taxi-duration
+
+# Serving
+curl -X POST http://model.local:30448/predict/duration \
+  -H "Content-Type: application/json" \
+  -d '{"pickup_zone_id":161,"dropoff_zone_id":236,"trip_distance":3.5,"pickup_hour":14,"pickup_day_of_week":2,"pickup_month":1,"passenger_count":1}'
+```
+
+### 6.6 Drift demo
+
+```bash
+# В Airflow UI: Admin → Variables → Add
+# Key: taxi_simulation_date, Value: 2024-07-01
+# Simulator начнёт лить июльские данные → drift в следующих фазах
+# Очистить Variable → simulator продолжит с сохранённого state
+```
+
+### 6.7 CI/CD (аналогично water-quality-model)
+
+**Автоматическая сборка**: push в main `root/nyc-taxi-model` → Gitea Actions
+собирает `nyc-taxi-model:sha-XXXXXXX` и `nyc-taxi-serving:sha-XXXXXXX` (+ `:latest`).
+
+**Деплой**: кнопка "Run Workflow" на `deploy.yaml` в Gitea UI → обновляет image tag → ArgoCD sync.
+
+```bash
+# Создать API token (если нет)
 curl -s -u root:root -X POST 'http://gitea.local:3000/api/v1/users/root/tokens' \
-  -H 'Content-Type: application/json' -d '{"name":"ci-deploy","scopes":["write:repository"]}'
-# Добавить token как secret DEPLOY_TOKEN в repo water-quality-model:
+  -H 'Content-Type: application/json' -d '{"name":"ci-deploy-taxi","scopes":["write:repository"]}'
+# Добавить token как secret DEPLOY_TOKEN в repo nyc-taxi-model:
 # Gitea UI → Settings → Actions → Secrets
 ```
 

@@ -1,0 +1,23 @@
+name: Build Docker Images
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build training image
+        run: |
+          TAG=sha-${GITHUB_SHA::7}
+          docker build -t nyc-taxi-model:$TAG -t nyc-taxi-model:latest .
+          echo "Built nyc-taxi-model:$TAG"
+
+      - name: Build serving image
+        run: |
+          TAG=sha-${GITHUB_SHA::7}
+          docker build -t nyc-taxi-serving:$TAG -t nyc-taxi-serving:latest -f Dockerfile.serving .
+          echo "Built nyc-taxi-serving:$TAG"

@@ -7,21 +7,21 @@ metadata:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: water-quality-api
+  name: taxi-serving-api
   namespace: serving
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: water-quality-api
+      app: taxi-serving-api
   template:
     metadata:
       labels:
-        app: water-quality-api
+        app: taxi-serving-api
     spec:
       containers:
         - name: api
-          image: water-quality-serving:latest
+          image: nyc-taxi-serving:latest
           imagePullPolicy: Never
           ports:
             - containerPort: 8080
@@ -57,11 +57,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: water-quality-api
+  name: taxi-serving-api
   namespace: serving
 spec:
   selector:
-    app: water-quality-api
+    app: taxi-serving-api
   ports:
     - port: 8080
       targetPort: 8080
@@ -70,7 +70,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: water-quality-api
+  name: taxi-serving-api
   namespace: serving
 spec:
   ingressClassName: nginx
@@ -82,6 +82,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: water-quality-api
+                name: taxi-serving-api
                 port:
                   number: 8080
