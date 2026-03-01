@@ -10,13 +10,18 @@
 127.0.0.1 minio.local minio-api.local mlflow.local airflow.local model.local gitea.local argocd.local
 ```
 
-## 1. Gitea (docker-compose — вне K8s)
+## 1. Gitea + Act Runner (docker-compose — вне K8s)
 
 ```bash
-docker compose up -d   # из директории с docker-compose.yml
+# Первый запуск: получить registration token из Gitea UI (Admin → Runners)
+# или через API, и передать в RUNNER_TOKEN
+RUNNER_TOKEN=<token> docker compose up -d
 ```
 
 UI: http://gitea.local:3000 (root / root)
+
+Act runner автоматически зарегистрируется при первом запуске.
+Для repo `water-quality-model` — включить Actions в Settings → Advanced.
 
 ## 2. Ingress Controller (nginx)
 
@@ -65,11 +70,11 @@ kubectl apply -f argocd/app-of-apps.yaml
 ArgoCD автоматически синхронизирует: sealed-secrets, minio, mlflow, airflow, serving.
 Sealed Secrets контроллер расшифрует SealedSecrets → создаст обычные Secrets → поды подхватят.
 
-## 6. ML-образы (локальные)
+## 6. ML-образы
 
+`water-quality-model` и `water-quality-serving` собираются автоматически через Gitea Actions
+при push в main ветку `root/water-quality-model`. MLflow-образ — вручную:
 ```bash
-docker build -t water-quality-model:latest <path-to-water-quality-model>/
-docker build -t water-quality-serving:latest -f <path>/Dockerfile.serving <path>/
 docker build -t mlflow-custom:v2.19.0 <path-to-mlflow-dockerfile>/
 ```
 

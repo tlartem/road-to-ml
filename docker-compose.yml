@@ -15,3 +15,18 @@ services:
       - "3000:3000"
       - "2222:22"
     restart: unless-stopped
+
+  act-runner:
+    image: gitea/act_runner:latest
+    container_name: act-runner
+    environment:
+      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_RUNNER_REGISTRATION_TOKEN=${RUNNER_TOKEN}
+      - CONFIG_FILE=/config/config.yaml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./act-runner-data:/data
+      - ./act-runner-config.yaml:/config/config.yaml:ro
+    depends_on:
+      - gitea
+    restart: unless-stopped

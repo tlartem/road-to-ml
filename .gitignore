@@ -6,8 +6,9 @@ mlops-platform/argocd/repo-secret.yaml
 !**/sealed-secret.yaml
 !**/sealed-repo-secret.yaml
 
-# Gitea data (docker-compose volume)
+# Gitea data (docker-compose volumes)
 gitea-data/
+act-runner-data/
 
 # Python
 __pycache__/

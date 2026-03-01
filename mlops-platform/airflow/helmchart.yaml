@@ -19,38 +19,17 @@ spec:
         email: admin@example.com
         firstName: Admin
         lastName: Admin
-      extraVolumes:
-        - name: dags
-          hostPath:
-            path: /Users/tlartem/road-to-ml/airflow-dags/dags
-      extraVolumeMounts:
-        - name: dags
-          mountPath: /opt/airflow/dags
 
-    scheduler:
-      extraVolumes:
-        - name: dags
-          hostPath:
-            path: /Users/tlartem/road-to-ml/airflow-dags/dags
-      extraVolumeMounts:
-        - name: dags
-          mountPath: /opt/airflow/dags
-
-    dagProcessor:
-      extraVolumes:
-        - name: dags
-          hostPath:
-            path: /Users/tlartem/road-to-ml/airflow-dags/dags
-      extraVolumeMounts:
-        - name: dags
-          mountPath: /opt/airflow/dags
-
-    # DAGs: прод — git-sync, локалка — hostPath (выше)
     dags:
-      persistence:
-        enabled: false
       gitSync:
-        enabled: false
+        enabled: true
+        repo: http://host.docker.internal:3000/root/airflow-dags.git
+        branch: main
+        subPath: dags
+        wait: 30
+        credentialsSecret: git-credentials
+        credentialsSecretUsernameKey: username
+        credentialsSecretPasswordKey: password
 
     flower:
       enabled: false

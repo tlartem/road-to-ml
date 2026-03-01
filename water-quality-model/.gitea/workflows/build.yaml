@@ -1,0 +1,20 @@
+name: Build Docker Images
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build training image
+        run: docker build -t water-quality-model:latest .
+
+      - name: Build serving image
+        run: docker build -t water-quality-serving:latest -f Dockerfile.serving .
+
+      - name: Show built images
+        run: docker images | grep water-quality

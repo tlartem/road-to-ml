@@ -1,0 +1,8 @@
+runner:
+  labels:
+    - "ubuntu-latest:docker://node:20-bookworm"
+
+container:
+  options: "-v /var/run/docker.sock:/var/run/docker.sock"
+  valid_volumes:
+    - /var/run/docker.sock
