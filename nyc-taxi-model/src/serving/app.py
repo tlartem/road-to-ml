@@ -1,8 +1,8 @@
-"""NYC Taxi model serving API — loads model from MLflow Registry.
+"""NYC Taxi model serving API — 3 models from MLflow Registry.
 
-Loads the 'champion' model alias from MLflow. Background thread checks
-for new champion versions every 60 seconds — no pod restart needed.
-Fetches zone-level features from Feast feature server at prediction time.
+Models: duration, fare, demand. Each uses 'champion' alias.
+Background thread refreshes models every 60s — no pod restart needed.
+Zone features fetched from Feast server at prediction time.
 """
 
 import logging
@@ -26,23 +26,27 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(title="NYC Taxi Prediction API")
 
-DURATION_MODEL_NAME = os.environ.get("DURATION_MODEL_NAME", "taxi-duration")
 MODEL_REFRESH_INTERVAL = int(os.environ.get("MODEL_REFRESH_INTERVAL", "60"))
 FEAST_SERVER_URL = os.environ.get(
     "FEAST_SERVER_URL", "http://feast-server.feast.svc.cluster.local:6566"
 )
 
-DURATION_MODEL = None
-CURRENT_MODEL_VERSION = None
+# Model registry: name → {"model": model_obj, "version": str}
+MODEL_NAMES = ["taxi-duration", "taxi-fare", "taxi-demand"]
+MODELS = {}
 
 ZONE_FEATURE_NAMES = [
     "zone_stats:zone_avg_fare",
     "zone_stats:zone_avg_duration_min",
     "zone_stats:zone_avg_distance",
+    "zone_stats:zone_trip_count",
 ]
 
 
-class DurationRequest(BaseModel):
+# --- Request/Response schemas ---
+
+class TripRequest(BaseModel):
+    """Shared request for duration and fare prediction."""
     pickup_zone_id: int = 161
     dropoff_zone_id: int = 236
     trip_distance: float = 3.5
@@ -58,36 +62,62 @@ class DurationResponse(BaseModel):
     model_version: str
 
 
-def load_champion():
-    """Load champion model from MLflow Registry. Returns (model, version) or raises."""
+class FareResponse(BaseModel):
+    predicted_fare: float
+    model_name: str
+    model_version: str
+
+
+class DemandRequest(BaseModel):
+    zone_id: int = 161
+    pickup_hour: int = 14
+    day_of_week: int = 2
+    month: int = 1
+
+
+class DemandResponse(BaseModel):
+    predicted_trip_count: float
+    model_name: str
+    model_version: str
+
+
+# --- Model loading ---
+
+def load_champion(model_name):
+    """Load champion model. Returns (model, version) or raises."""
     client = mlflow.tracking.MlflowClient()
-    mv = client.get_model_version_by_alias(DURATION_MODEL_NAME, "champion")
-    model_uri = f"models:/{DURATION_MODEL_NAME}@champion"
-    model = mlflow.sklearn.load_model(model_uri)
+    mv = client.get_model_version_by_alias(model_name, "champion")
+    model = mlflow.sklearn.load_model(f"models:/{model_name}@champion")
     return model, mv.version
 
 
 def refresh_model_loop():
-    """Background thread: check for new champion version every N seconds."""
-    global DURATION_MODEL, CURRENT_MODEL_VERSION
+    """Background: check for new champion versions every N seconds."""
     while True:
         time.sleep(MODEL_REFRESH_INTERVAL)
-        try:
-            client = mlflow.tracking.MlflowClient()
-            mv = client.get_model_version_by_alias(DURATION_MODEL_NAME, "champion")
-            if mv.version != CURRENT_MODEL_VERSION:
-                log.info("New champion detected: v%s (was v%s), reloading...",
-                         mv.version, CURRENT_MODEL_VERSION)
-                model, version = load_champion()
-                DURATION_MODEL = model
-                CURRENT_MODEL_VERSION = version
-                log.info("Model refreshed to v%s", version)
-        except Exception as e:
-            log.debug("Model refresh check failed: %s", e)
+        client = mlflow.tracking.MlflowClient()
+        for name in MODEL_NAMES:
+            if name not in MODELS:
+                # Try loading newly available models
+                try:
+                    model, version = load_champion(name)
+                    MODELS[name] = {"model": model, "version": version}
+                    log.info("Loaded new model %s v%s", name, version)
+                except Exception:
+                    pass
+                continue
+            try:
+                mv = client.get_model_version_by_alias(name, "champion")
+                if mv.version != MODELS[name]["version"]:
+                    log.info("New champion for %s: v%s → v%s", name, MODELS[name]["version"], mv.version)
+                    model, version = load_champion(name)
+                    MODELS[name] = {"model": model, "version": version}
+            except Exception:
+                pass
 
 
 def get_zone_features(zone_ids):
-    """Fetch zone stats from Feast online store for given zone IDs."""
+    """Fetch zone stats from Feast online store."""
     try:
         resp = requests.post(
             f"{FEAST_SERVER_URL}/get-online-features",
@@ -104,7 +134,6 @@ def get_zone_features(zone_ids):
         results = {}
         for i, name in enumerate(feature_names):
             results[name] = data["results"][i]["values"]
-
         return results
     except Exception as e:
         log.warning("Feast request failed, using defaults: %s", e)
@@ -113,44 +142,12 @@ def get_zone_features(zone_ids):
             "zone_avg_fare": [0.0] * n,
             "zone_avg_duration_min": [0.0] * n,
             "zone_avg_distance": [0.0] * n,
+            "zone_trip_count": [0.0] * n,
         }
 
 
-@app.on_event("startup")
-def startup():
-    global DURATION_MODEL, CURRENT_MODEL_VERSION
-
-    mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-    log.info("Loading champion model '%s' from MLflow Registry...", DURATION_MODEL_NAME)
-
-    model, version = load_champion()
-    DURATION_MODEL = model
-    CURRENT_MODEL_VERSION = version
-    log.info("Champion model loaded: v%s", version)
-
-    # Start background refresh thread
-    t = threading.Thread(target=refresh_model_loop, daemon=True)
-    t.start()
-    log.info("Model refresh thread started (interval=%ds)", MODEL_REFRESH_INTERVAL)
-
-
-@app.get("/health")
-def health():
-    if DURATION_MODEL is None:
-        raise HTTPException(status_code=503, detail="Models not loaded")
-    return {
-        "status": "healthy",
-        "models": {"duration": DURATION_MODEL_NAME},
-        "version": CURRENT_MODEL_VERSION,
-    }
-
-
-@app.post("/predict/duration", response_model=DurationResponse)
-def predict_duration(request: DurationRequest):
-    if DURATION_MODEL is None:
-        raise HTTPException(status_code=503, detail="Duration model not loaded")
-
-    # Fetch zone features from Feast for both pickup and dropoff zones
+def build_trip_features(request: TripRequest):
+    """Build feature dict for duration/fare models (trip features + zone stats)."""
     zone_features = get_zone_features([request.pickup_zone_id, request.dropoff_zone_id])
 
     features = {
@@ -161,34 +158,117 @@ def predict_duration(request: DurationRequest):
         "pickup_day_of_week": request.pickup_day_of_week,
         "pickup_month": request.pickup_month,
         "passenger_count": request.passenger_count,
-        # Pickup zone stats (index 0)
         "pu_zone_avg_fare": zone_features["zone_avg_fare"][0],
         "pu_zone_avg_duration_min": zone_features["zone_avg_duration_min"][0],
         "pu_zone_avg_distance": zone_features["zone_avg_distance"][0],
-        # Dropoff zone stats (index 1)
         "do_zone_avg_fare": zone_features["zone_avg_fare"][1],
         "do_zone_avg_duration_min": zone_features["zone_avg_duration_min"][1],
         "do_zone_avg_distance": zone_features["zone_avg_distance"][1],
     }
 
     df = pd.DataFrame([features])
-    # Ensure all zone features are float (Feast may return None)
     for col in df.columns:
         if col.startswith(("pu_zone_", "do_zone_")):
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-    prediction = DURATION_MODEL.predict(df)[0]
+    return df
 
-    log.info(
-        "Duration prediction: %.2f min (zone %d→%d, %.1f mi, model v%s)",
-        prediction,
-        request.pickup_zone_id,
-        request.dropoff_zone_id,
-        request.trip_distance,
-        CURRENT_MODEL_VERSION,
-    )
+
+# --- Startup ---
+
+@app.on_event("startup")
+def startup():
+    mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+
+    for name in MODEL_NAMES:
+        try:
+            model, version = load_champion(name)
+            MODELS[name] = {"model": model, "version": version}
+            log.info("Loaded %s champion v%s", name, version)
+        except Exception as e:
+            log.warning("Could not load %s: %s (will retry in background)", name, e)
+
+    if not MODELS:
+        log.error("No models loaded — at least one champion must exist")
+        sys.exit(1)
+
+    t = threading.Thread(target=refresh_model_loop, daemon=True)
+    t.start()
+    log.info("Model refresh thread started (interval=%ds)", MODEL_REFRESH_INTERVAL)
+
+
+# --- Endpoints ---
+
+@app.get("/health")
+def health():
+    loaded = {name: info["version"] for name, info in MODELS.items()}
+    return {"status": "healthy", "models": loaded}
+
+
+@app.post("/predict/duration", response_model=DurationResponse)
+def predict_duration(request: TripRequest):
+    if "taxi-duration" not in MODELS:
+        raise HTTPException(status_code=503, detail="Duration model not loaded")
+
+    df = build_trip_features(request)
+    m = MODELS["taxi-duration"]
+    prediction = m["model"].predict(df)[0]
+
+    log.info("Duration: %.2f min (zone %d→%d)", prediction, request.pickup_zone_id, request.dropoff_zone_id)
 
     return DurationResponse(
         predicted_duration_min=round(float(prediction), 2),
-        model_name=DURATION_MODEL_NAME,
-        model_version=CURRENT_MODEL_VERSION,
+        model_name="taxi-duration",
+        model_version=m["version"],
+    )
+
+
+@app.post("/predict/fare", response_model=FareResponse)
+def predict_fare(request: TripRequest):
+    if "taxi-fare" not in MODELS:
+        raise HTTPException(status_code=503, detail="Fare model not loaded")
+
+    df = build_trip_features(request)
+    m = MODELS["taxi-fare"]
+    prediction = m["model"].predict(df)[0]
+
+    log.info("Fare: $%.2f (zone %d→%d)", prediction, request.pickup_zone_id, request.dropoff_zone_id)
+
+    return FareResponse(
+        predicted_fare=round(float(prediction), 2),
+        model_name="taxi-fare",
+        model_version=m["version"],
+    )
+
+
+@app.post("/predict/demand", response_model=DemandResponse)
+def predict_demand(request: DemandRequest):
+    if "taxi-demand" not in MODELS:
+        raise HTTPException(status_code=503, detail="Demand model not loaded")
+
+    # Demand uses zone stats directly (not pu/do split)
+    zone_features = get_zone_features([request.zone_id])
+    features = {
+        "zone_id": request.zone_id,
+        "pickup_hour": request.pickup_hour,
+        "day_of_week": request.day_of_week,
+        "month": request.month,
+        "zone_avg_fare": zone_features["zone_avg_fare"][0],
+        "zone_avg_duration_min": zone_features["zone_avg_duration_min"][0],
+        "zone_avg_distance": zone_features["zone_avg_distance"][0],
+        "zone_trip_count": zone_features["zone_trip_count"][0],
+    }
+
+    df = pd.DataFrame([features])
+    for col in ["zone_avg_fare", "zone_avg_duration_min", "zone_avg_distance", "zone_trip_count"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    m = MODELS["taxi-demand"]
+    prediction = m["model"].predict(df)[0]
+
+    log.info("Demand: %.1f trips (zone %d, hour %d)", prediction, request.zone_id, request.pickup_hour)
+
+    return DemandResponse(
+        predicted_trip_count=round(float(prediction), 1),
+        model_name="taxi-demand",
+        model_version=m["version"],
     )
