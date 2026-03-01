@@ -78,10 +78,25 @@ kubectl apply -f argocd/app-of-apps.yaml
 ArgoCD автоматически синхронизирует: sealed-secrets, minio, mlflow, airflow, serving.
 Sealed Secrets контроллер расшифрует SealedSecrets → создаст обычные Secrets → поды подхватят.
 
-## 6. ML-образы
+## 6. ML-образы и CI/CD
 
-`water-quality-model` и `water-quality-serving` собираются автоматически через Gitea Actions
-при push в main ветку `root/water-quality-model`. MLflow-образ — вручную:
+**Автоматическая сборка**: push в main `root/water-quality-model` → Gitea Actions
+собирает `water-quality-model:sha-XXXXXXX` и `water-quality-serving:sha-XXXXXXX` (+ `:latest`).
+
+**Деплой**: кнопка "Run Workflow" на `deploy.yaml` в Gitea UI
+(или API: `POST /api/v1/repos/root/water-quality-model/actions/workflows/deploy.yaml/dispatches`)
+→ обновляет image tag в `serving/serving.yaml` → ArgoCD синхронизирует.
+
+**Настройка CI (один раз)**:
+```bash
+# Создать API token
+curl -s -u root:root -X POST 'http://gitea.local:3000/api/v1/users/root/tokens' \
+  -H 'Content-Type: application/json' -d '{"name":"ci-deploy","scopes":["write:repository"]}'
+# Добавить token как secret DEPLOY_TOKEN в repo water-quality-model:
+# Gitea UI → Settings → Actions → Secrets
+```
+
+MLflow-образ — вручную:
 ```bash
 docker build -t mlflow-custom:v2.19.0 <path-to-mlflow-dockerfile>/
 ```
