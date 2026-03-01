@@ -1,0 +1,17 @@
+services:
+  gitea:
+    image: gitea/gitea:1.22
+    container_name: gitea
+    environment:
+      - GITEA__server__DOMAIN=gitea.local
+      - GITEA__server__ROOT_URL=http://gitea.local:3000
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__service__DISABLE_REGISTRATION=false
+      - GITEA__packages__ENABLED=true
+    volumes:
+      - ./gitea-data:/data
+    ports:
+      - "3000:3000"
+      - "2222:22"
+    restart: unless-stopped
