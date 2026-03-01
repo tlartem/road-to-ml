@@ -45,14 +45,16 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.pas
 
 UI: http://argocd.local:30448 (admin / <пароль выше>)
 
-## 4. Repo secret (bootstrap — один раз вручную)
+## 4. Bootstrap secrets (один раз вручную)
 
-ArgoCD нужен доступ к Gitea для первой синхронизации:
+ArgoCD нужен доступ к Gitea для первой синхронизации, а SealedSecret для repo-creds
+нужно применить вручную (argocd/ не управляется ArgoCD — bootstrap-директория):
 ```bash
 kubectl apply -f argocd/repo-secret.yaml
+kubectl apply -f argocd/sealed-repo-secret.yaml
 ```
 
-После первого sync ArgoCD будет управлять SealedSecret-версией этого секрета автоматически.
+После этого контроллер создаст Secret из SealedSecret, и ручной repo-secret можно удалить.
 
 ## 5. App-of-apps (bootstrap ArgoCD)
 
