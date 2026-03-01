@@ -24,7 +24,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 RAW_BUCKET = "taxi-raw"
+STREAM_BUCKET = "taxi-streaming"
 PROCESSED_BUCKET = "taxi-processed"
+DATA_SOURCE = os.environ.get("DATA_SOURCE", "raw")  # "raw" or "streaming"
 TRAIN_MONTHS = os.environ.get("TRAIN_MONTHS", "2024-01,2024-02").split(",")
 
 
@@ -38,6 +40,8 @@ def get_s3():
 
 
 def load_raw_data(s3):
+    if DATA_SOURCE == "streaming":
+        return load_streaming_data(s3)
     frames = []
     for month in TRAIN_MONTHS:
         key = f"yellow_tripdata_{month}.parquet"
@@ -46,6 +50,25 @@ def load_raw_data(s3):
         df = pd.read_parquet(io.BytesIO(resp["Body"].read()))
         log.info("  %d rows", len(df))
         frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+
+def load_streaming_data(s3):
+    """Load all parquet files from streaming bucket."""
+    log.info("Loading streaming data from s3://%s/", STREAM_BUCKET)
+    paginator = s3.get_paginator("list_objects_v2")
+    keys = []
+    for page in paginator.paginate(Bucket=STREAM_BUCKET):
+        for obj in page.get("Contents", []):
+            if obj["Key"].endswith(".parquet"):
+                keys.append(obj["Key"])
+    if not keys:
+        raise RuntimeError(f"No parquet files in s3://{STREAM_BUCKET}/")
+    log.info("Found %d streaming files", len(keys))
+    frames = []
+    for key in keys:
+        resp = s3.get_object(Bucket=STREAM_BUCKET, Key=key)
+        frames.append(pd.read_parquet(io.BytesIO(resp["Body"].read())))
     return pd.concat(frames, ignore_index=True)
 
 
