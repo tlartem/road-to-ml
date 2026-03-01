@@ -1,53 +1,76 @@
-# K8s Cluster Setup
+# MLOps Platform Bootstrap
 
-## 1. Ingress Controller (nginx)
+## Prerequisites
+
+- OrbStack (K8s)
+- Docker / docker-compose
+- `/etc/hosts`:
+```
+127.0.0.1 minio.local minio-api.local mlflow.local airflow.local model.local gitea.local argocd.local
+```
+
+## 1. Gitea (docker-compose — вне K8s)
+
+```bash
+cd ~/road-to-ml
+docker compose up -d
+```
+
+UI: http://gitea.local:3000 (root / root)
+
+## 2. Ingress Controller (nginx)
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/cloud/deploy.yaml
 ```
 
-## 2. /etc/hosts
+## 3. ArgoCD
 
 ```bash
-sudo sh -c 'echo "127.0.0.1 minio.local minio-api.local mlflow.local airflow.local" >> /etc/hosts'
+kubectl apply -f k8s/argocd/namespace.yaml
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml --server-side --force-conflicts
+kubectl delete networkpolicy --all -n argocd
+
+# Отключить HTTPS-редирект (для ingress без TLS)
+kubectl -n argocd patch configmap argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}'
+kubectl -n argocd rollout restart deployment argocd-server
+
+kubectl apply -f k8s/argocd/ingress.yaml
 ```
 
-## 3. MinIO
+Получить admin пароль:
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
+```
+
+UI: http://argocd.local:30448 (admin / <пароль выше>)
+
+## 4. Secrets (вручную, не в git)
 
 ```bash
-kubectl apply -f k8s/minio/namespace.yaml
 kubectl apply -f k8s/minio/secret.yaml
-kubectl apply -f k8s/minio/minio.yaml
-kubectl apply -f k8s/minio/ingress.yaml
-```
-
-## 4. MLflow
-
-```bash
-kubectl apply -f k8s/mlflow/namespace.yaml
 kubectl apply -f k8s/mlflow/secret.yaml
-kubectl apply -f k8s/mlflow/postgres.yaml
-kubectl apply -f k8s/mlflow/mlflow.yaml
-kubectl apply -f k8s/mlflow/ingress.yaml
+kubectl apply -f k8s/argocd/repo-secret.yaml
 ```
 
-## 5. Airflow
+## 5. App-of-apps (bootstrap ArgoCD)
 
 ```bash
-kubectl apply -f k8s/airflow/namespace.yaml
-kubectl apply -f k8s/airflow/helmchart.yaml
-# Подождать ~2 мин пока поднимется
-kubectl apply -f k8s/airflow/ingress.yaml
+kubectl apply -f k8s/argocd/app-of-apps.yaml
 ```
 
-UI: http://airflow.local:30448 (admin / admin)
+ArgoCD автоматически синхронизирует: minio, mlflow, airflow, serving.
 
-## 6. Запуск пайплайна
+## 6. ML-образы (локальные)
 
 ```bash
-# Собрать ML-образ (из репо water-quality-model)
 docker build -t water-quality-model:latest ~/water-quality-model/
-
-# DAGs лежат в ~/airflow-dags/dags/ (монтируются в Airflow через hostPath)
-# Запуск через Airflow UI или CLI
+docker build -t water-quality-serving:latest -f ~/water-quality-model/Dockerfile.serving ~/water-quality-model/
+docker build -t mlflow-custom:v2.19.0 ~/road-to-ml/k8s/mlflow/
 ```
+
+## GitOps workflow
+
+1. Изменить манифест локально
+2. Commit + push в Gitea (`git push gitea main`)
+3. ArgoCD автоматически обнаружит изменение и применит его
