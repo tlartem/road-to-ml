@@ -1,11 +1,3 @@
 # Kubernetes secrets (contain credentials)
-k8s/**/secret.yaml
-k8s/argocd/repo-secret.yaml
-
-# Gitea data (docker-compose volume)
-gitea-data/
-
-# Python
-__pycache__/
-*.pyc
-.venv/
+**/secret.yaml
+argocd/repo-secret.yaml

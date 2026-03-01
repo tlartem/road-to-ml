@@ -12,8 +12,7 @@
 ## 1. Gitea (docker-compose — вне K8s)
 
 ```bash
-cd ~/road-to-ml
-docker compose up -d
+docker compose up -d   # из директории с docker-compose.yml
 ```
 
 UI: http://gitea.local:3000 (root / root)
@@ -27,7 +26,7 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/cont
 ## 3. ArgoCD
 
 ```bash
-kubectl apply -f k8s/argocd/namespace.yaml
+kubectl apply -f argocd/namespace.yaml
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml --server-side --force-conflicts
 kubectl delete networkpolicy --all -n argocd
 
@@ -35,7 +34,7 @@ kubectl delete networkpolicy --all -n argocd
 kubectl -n argocd patch configmap argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}'
 kubectl -n argocd rollout restart deployment argocd-server
 
-kubectl apply -f k8s/argocd/ingress.yaml
+kubectl apply -f argocd/ingress.yaml
 ```
 
 Получить admin пароль:
@@ -48,15 +47,15 @@ UI: http://argocd.local:30448 (admin / <пароль выше>)
 ## 4. Secrets (вручную, не в git)
 
 ```bash
-kubectl apply -f k8s/minio/secret.yaml
-kubectl apply -f k8s/mlflow/secret.yaml
-kubectl apply -f k8s/argocd/repo-secret.yaml
+kubectl apply -f minio/secret.yaml
+kubectl apply -f mlflow/secret.yaml
+kubectl apply -f argocd/repo-secret.yaml
 ```
 
 ## 5. App-of-apps (bootstrap ArgoCD)
 
 ```bash
-kubectl apply -f k8s/argocd/app-of-apps.yaml
+kubectl apply -f argocd/app-of-apps.yaml
 ```
 
 ArgoCD автоматически синхронизирует: minio, mlflow, airflow, serving.
@@ -64,13 +63,13 @@ ArgoCD автоматически синхронизирует: minio, mlflow, a
 ## 6. ML-образы (локальные)
 
 ```bash
-docker build -t water-quality-model:latest ~/water-quality-model/
-docker build -t water-quality-serving:latest -f ~/water-quality-model/Dockerfile.serving ~/water-quality-model/
-docker build -t mlflow-custom:v2.19.0 ~/road-to-ml/k8s/mlflow/
+docker build -t water-quality-model:latest <path-to-water-quality-model>/
+docker build -t water-quality-serving:latest -f <path>/Dockerfile.serving <path>/
+docker build -t mlflow-custom:v2.19.0 <path-to-mlflow-dockerfile>/
 ```
 
 ## GitOps workflow
 
-1. Изменить манифест локально
-2. Commit + push в Gitea (`git push gitea main`)
+1. Изменить манифест в клоне этого репозитория
+2. Commit + push в Gitea
 3. ArgoCD автоматически обнаружит изменение и применит его

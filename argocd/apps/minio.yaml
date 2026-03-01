@@ -1,17 +1,16 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: app-of-apps
+  name: minio
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: http://host.docker.internal:3000/root/mlops-platform.git
     targetRevision: main
-    path: k8s/argocd/apps
+    path: minio
   destination:
     server: https://kubernetes.default.svc
-    namespace: argocd
   syncPolicy:
     automated:
       prune: true

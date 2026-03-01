@@ -8,7 +8,7 @@ spec:
   source:
     repoURL: http://host.docker.internal:3000/root/mlops-platform.git
     targetRevision: main
-    path: k8s/mlflow
+    path: mlflow
   destination:
     server: https://kubernetes.default.svc
   syncPolicy:
