@@ -30,6 +30,8 @@ spec:
               value: "http://mlflow.mlflow.svc.cluster.local:5000"
             - name: MLFLOW_S3_ENDPOINT_URL
               value: "http://minio.minio.svc.cluster.local:9000"
+            - name: FEAST_SERVER_URL
+              value: "http://feast-server.feast.svc.cluster.local:6566"
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:

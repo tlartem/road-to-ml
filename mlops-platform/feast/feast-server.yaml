@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feast-server
+  namespace: feast
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: feast-server
+  template:
+    metadata:
+      labels:
+        app: feast-server
+    spec:
+      containers:
+        - name: feast
+          image: nyc-taxi-model:latest
+          imagePullPolicy: Never
+          command: ["sh", "-c", "cd /app/feast && feast apply && exec feast serve --host 0.0.0.0 --port 6566"]
+          ports:
+            - containerPort: 6566
+          volumeMounts:
+            - name: feast-data
+              mountPath: /feast-data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 6566
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 6566
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: feast-data
+          persistentVolumeClaim:
+            claimName: feast-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: feast-server
+  namespace: feast
+spec:
+  selector:
+    app: feast-server
+  ports:
+    - port: 6566
+      targetPort: 6566

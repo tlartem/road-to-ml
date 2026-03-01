@@ -1,4 +1,7 @@
-"""Train trip duration prediction model (LightGBM) and register in MLflow."""
+"""Train trip duration prediction model (LightGBM) and register in MLflow.
+
+Enriches trip data with zone-level features from Feature Store (MinIO).
+"""
 
 import io
 import logging
@@ -20,7 +23,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 PROCESSED_BUCKET = "taxi-processed"
-FEATURE_COLS = [
+
+# Direct trip features
+TRIP_FEATURES = [
     "pickup_zone_id",
     "dropoff_zone_id",
     "trip_distance",
@@ -29,6 +34,18 @@ FEATURE_COLS = [
     "pickup_month",
     "passenger_count",
 ]
+
+# Zone stats from Feature Store (added for both pickup and dropoff zones)
+ZONE_FEATURES = [
+    "pu_zone_avg_fare",
+    "pu_zone_avg_duration_min",
+    "pu_zone_avg_distance",
+    "do_zone_avg_fare",
+    "do_zone_avg_duration_min",
+    "do_zone_avg_distance",
+]
+
+FEATURE_COLS = TRIP_FEATURES + ZONE_FEATURES
 TARGET_COL = "duration_min"
 
 
@@ -46,6 +63,34 @@ def load_data(s3, key):
     return pd.read_parquet(io.BytesIO(resp["Body"].read()))
 
 
+def enrich_with_zone_stats(df, zone_stats):
+    """Join zone-level features for pickup and dropoff zones."""
+    zone_cols = ["zone_id", "zone_avg_fare", "zone_avg_duration_min", "zone_avg_distance"]
+    zs = zone_stats[zone_cols]
+
+    # Pickup zone
+    df = df.merge(zs, left_on="pickup_zone_id", right_on="zone_id", how="left").drop("zone_id", axis=1)
+    df = df.rename(columns={
+        "zone_avg_fare": "pu_zone_avg_fare",
+        "zone_avg_duration_min": "pu_zone_avg_duration_min",
+        "zone_avg_distance": "pu_zone_avg_distance",
+    })
+
+    # Dropoff zone
+    df = df.merge(zs, left_on="dropoff_zone_id", right_on="zone_id", how="left").drop("zone_id", axis=1)
+    df = df.rename(columns={
+        "zone_avg_fare": "do_zone_avg_fare",
+        "zone_avg_duration_min": "do_zone_avg_duration_min",
+        "zone_avg_distance": "do_zone_avg_distance",
+    })
+
+    # Fill missing zone stats with 0 and ensure float dtype
+    for col in ZONE_FEATURES:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    return df
+
+
 def main():
     s3 = get_s3()
 
@@ -53,6 +98,16 @@ def main():
     train_df = load_data(s3, "duration/train.parquet")
     test_df = load_data(s3, "duration/test.parquet")
     log.info("Train: %d rows, Test: %d rows", len(train_df), len(test_df))
+
+    # Load zone stats from Feature Store (MinIO)
+    log.info("Loading zone stats from Feature Store...")
+    zone_stats = load_data(s3, "feast/zone_stats.parquet")
+    log.info("Zone stats: %d zones", len(zone_stats))
+
+    # Enrich with zone features
+    train_df = enrich_with_zone_stats(train_df, zone_stats)
+    test_df = enrich_with_zone_stats(test_df, zone_stats)
+    log.info("Enriched with zone features: %s", ZONE_FEATURES)
 
     X_train = train_df[FEATURE_COLS]
     y_train = train_df[TARGET_COL]
@@ -77,6 +132,7 @@ def main():
         mlflow.log_param("train_rows", len(train_df))
         mlflow.log_param("test_rows", len(test_df))
         mlflow.log_param("features", FEATURE_COLS)
+        mlflow.log_param("feature_store", "zone_stats")
 
         log.info("Training LightGBM with params: %s", params)
         model = lgb.LGBMRegressor(**params)
@@ -96,12 +152,50 @@ def main():
         for name, value in metrics.items():
             log.info("  %-12s %.4f", name, value)
 
-        mlflow.sklearn.log_model(
+        result = mlflow.sklearn.log_model(
             model,
             artifact_path="model",
             registered_model_name="taxi-duration",
         )
         log.info("Model registered: taxi-duration")
+
+        # Promote to champion if better than current champion
+        promote_if_better(metrics["mae"], result)
+
+
+def promote_if_better(new_mae, model_info):
+    """Set alias 'champion' on new model version if MAE improved."""
+    client = mlflow.tracking.MlflowClient()
+    model_name = "taxi-duration"
+
+    # Get new version number
+    new_version = None
+    for mv in client.search_model_versions(f"name='{model_name}'"):
+        if mv.run_id == model_info.run_id:
+            new_version = mv.version
+            break
+
+    if new_version is None:
+        log.warning("Could not find new model version, skipping promotion")
+        return
+
+    # Check current champion
+    try:
+        champion = client.get_model_version_by_alias(model_name, "champion")
+        champion_run = client.get_run(champion.run_id)
+        champion_mae = champion_run.data.metrics.get("mae")
+        log.info("Current champion: v%s (MAE=%.4f)", champion.version, champion_mae)
+
+        if new_mae < champion_mae:
+            log.info("New model is better (MAE %.4f < %.4f), promoting to champion", new_mae, champion_mae)
+            client.set_registered_model_alias(model_name, "champion", new_version)
+        else:
+            log.info("Current champion is still better (MAE %.4f >= %.4f), keeping v%s",
+                     new_mae, champion_mae, champion.version)
+    except Exception:
+        # No champion yet — promote first model
+        log.info("No champion alias found, setting v%s as first champion", new_version)
+        client.set_registered_model_alias(model_name, "champion", new_version)
 
 
 if __name__ == "__main__":

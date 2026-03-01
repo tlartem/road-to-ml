@@ -1,0 +1,9 @@
+project: nyc_taxi
+provider: local
+registry: /feast-data/registry.db
+online_store:
+  type: sqlite
+  path: /feast-data/online_store.db
+offline_store:
+  type: file
+entity_key_serialization_version: 3
