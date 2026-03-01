@@ -28,8 +28,6 @@ spec:
         subPath: dags
         wait: 30
         credentialsSecret: git-credentials
-        credentialsSecretUsernameKey: username
-        credentialsSecretPasswordKey: password
 
     flower:
       enabled: false
