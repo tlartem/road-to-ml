@@ -23,6 +23,8 @@ services:
       - GITEA_INSTANCE_URL=http://gitea:3000
       - GITEA_RUNNER_REGISTRATION_TOKEN=${RUNNER_TOKEN}
       - CONFIG_FILE=/config/config.yaml
+    extra_hosts:
+      - "gitea.local:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./act-runner-data:/data

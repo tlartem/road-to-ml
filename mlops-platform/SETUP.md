@@ -13,15 +13,23 @@
 ## 1. Gitea + Act Runner (docker-compose — вне K8s)
 
 ```bash
-# Первый запуск: получить registration token из Gitea UI (Admin → Runners)
-# или через API, и передать в RUNNER_TOKEN
-RUNNER_TOKEN=<token> docker compose up -d
+# Получить registration token через API:
+curl -s -u root:root 'http://gitea.local:3000/api/v1/user/actions/runners/registration-token' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])"
+
+# Записать в .env и запустить:
+echo "RUNNER_TOKEN=<token>" > .env
+docker compose up -d
 ```
 
 UI: http://gitea.local:3000 (root / root)
 
 Act runner автоматически зарегистрируется при первом запуске.
 Для repo `water-quality-model` — включить Actions в Settings → Advanced.
+
+**Важно**: `container.network` в конфиге act-runner НЕ использовать — вызывает зависание
+`docker create` на OrbStack/Docker 28.x. Вместо этого используется `--add-host gitea:host-gateway`
+в `container.options`, а runner создаёт временную сеть для каждого job.
 
 ## 2. Ingress Controller (nginx)
 

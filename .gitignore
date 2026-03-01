@@ -10,6 +10,9 @@ mlops-platform/argocd/repo-secret.yaml
 gitea-data/
 act-runner-data/
 
+# Environment variables (runner tokens, etc.)
+.env
+
 # Python
 __pycache__/
 *.pyc
