@@ -273,8 +273,14 @@ spec:
           configMap:
             name: grafana-dashboard-provisioning
         - name: dashboards
-          configMap:
-            name: grafana-dashboards
+          projected:
+            sources:
+              - configMap:
+                  name: grafana-dashboards
+              - configMap:
+                  name: grafana-dashboard-node-exporter
+              - configMap:
+                  name: grafana-dashboard-kube-state
 
 ---
 apiVersion: v1
