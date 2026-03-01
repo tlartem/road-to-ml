@@ -1,0 +1,291 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: VictoriaMetrics
+        type: prometheus
+        access: proxy
+        url: http://victoriametrics.monitoring:8428
+        isDefault: true
+        editable: false
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provisioning
+  namespace: monitoring
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        orgId: 1
+        folder: ""
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+data:
+  kubernetes-cluster.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "CPU Usage by Pod",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\", container!=\"POD\"}[5m])) by (namespace, pod)",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "auto" }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Memory Usage by Pod",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{container!=\"\", container!=\"POD\"}) by (namespace, pod)",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "auto" }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Pod Restarts",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
+          "targets": [
+            {
+              "expr": "sum(kube_pod_container_status_restarts_total) by (namespace, pod)",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 2, "pointSize": 5, "showPoints": "auto" }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Pods by Status",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
+          "targets": [
+            { "expr": "sum(kube_pod_status_phase{phase=\"Running\"})", "legendFormat": "Running" },
+            { "expr": "sum(kube_pod_status_phase{phase=\"Pending\"})", "legendFormat": "Pending" },
+            { "expr": "sum(kube_pod_status_phase{phase=\"Failed\"})", "legendFormat": "Failed" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+        },
+        {
+          "title": "Node CPU Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
+          "targets": [
+            {
+              "expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))",
+              "legendFormat": "CPU Usage"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "pointSize": 5, "showPoints": "auto" }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Node Memory Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
+          "targets": [
+            {
+              "expr": "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+              "legendFormat": "Memory Usage"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "pointSize": 5, "showPoints": "auto" }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Network I/O by Pod",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
+          "targets": [
+            {
+              "expr": "sum(rate(container_network_receive_bytes_total[5m])) by (namespace, pod)",
+              "legendFormat": "rx {{namespace}}/{{pod}}"
+            },
+            {
+              "expr": "sum(rate(container_network_transmit_bytes_total[5m])) by (namespace, pod)",
+              "legendFormat": "tx {{namespace}}/{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps",
+              "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "auto" }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Disk Usage (Node)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "${DS_VICTORIAMETRICS}" },
+          "targets": [
+            {
+              "expr": "1 - (node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})",
+              "legendFormat": "Disk Usage /"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "pointSize": 5, "showPoints": "auto" }
+            },
+            "overrides": []
+          }
+        }
+      ],
+      "schemaVersion": 39,
+      "templating": {
+        "list": [
+          {
+            "name": "DS_VICTORIAMETRICS",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "selected": true, "text": "VictoriaMetrics", "value": "VictoriaMetrics" },
+            "hide": 2
+          }
+        ]
+      },
+      "time": { "from": "now-1h", "to": "now" },
+      "timepicker": {},
+      "timezone": "",
+      "title": "Kubernetes Cluster",
+      "uid": "k8s-cluster",
+      "version": 1
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.4.0
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provisioning
+          configMap:
+            name: grafana-dashboard-provisioning
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+      name: http

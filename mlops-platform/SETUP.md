@@ -7,7 +7,7 @@
 - `kubeseal` CLI (`brew install kubeseal`)
 - `/etc/hosts`:
 ```
-127.0.0.1 minio.local minio-api.local mlflow.local airflow.local model.local gitea.local argocd.local
+127.0.0.1 minio.local minio-api.local mlflow.local airflow.local model.local gitea.local argocd.local grafana.local vm.local
 ```
 
 ## 1. Gitea + Act Runner (docker-compose — вне K8s)
@@ -99,6 +99,34 @@ curl -s -u root:root -X POST 'http://gitea.local:3000/api/v1/users/root/tokens' 
 MLflow-образ — вручную:
 ```bash
 docker build -t mlflow-custom:v2.19.0 <path-to-mlflow-dockerfile>/
+```
+
+## 7. Мониторинг (VictoriaMetrics + Grafana)
+
+Манифесты в `monitoring/` — ArgoCD синхронизирует автоматически через `argocd/apps/monitoring.yaml`.
+
+Добавить в `/etc/hosts` (если ещё не добавлены):
+```
+127.0.0.1 grafana.local vm.local
+```
+
+Компоненты:
+- **VictoriaMetrics** — TSDB, Prometheus-совместимый, scrape метрик
+- **Grafana** — дашборды (admin / admin)
+- **node-exporter** — метрики ноды (CPU, RAM, disk)
+- **kube-state-metrics** — метрики объектов K8s (pods, deployments)
+
+UI:
+- http://grafana.local:30448 (admin / admin)
+- http://vm.local:30448 (VictoriaMetrics UI, PromQL запросы)
+
+Проверка:
+```bash
+kubectl get pods -n monitoring
+# Все поды должны быть Running
+
+# VictoriaMetrics — запрос up показывает scrape targets
+curl -s 'http://vm.local:30448/api/v1/query?query=up' | python3 -c "import sys,json; [print(r['metric']['job'], r['value'][1]) for r in json.load(sys.stdin)['data']['result']]"
 ```
 
 ## GitOps workflow
