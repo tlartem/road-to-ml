@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: serving
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: water-quality-api
+  namespace: serving
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: water-quality-api
+  template:
+    metadata:
+      labels:
+        app: water-quality-api
+    spec:
+      containers:
+        - name: api
+          image: water-quality-serving:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow.mlflow.svc.cluster.local:5000"
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: "http://minio.minio.svc.cluster.local:9000"
+            - name: AWS_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "minioadmin"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: water-quality-api
+  namespace: serving
+spec:
+  selector:
+    app: water-quality-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: water-quality-api
+  namespace: serving
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: model.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: water-quality-api
+                port:
+                  number: 8080

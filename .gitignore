@@ -1,2 +1,7 @@
 # Kubernetes secrets (contain credentials)
 k8s/**/secret.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
