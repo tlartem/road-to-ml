@@ -4,6 +4,7 @@
 
 - OrbStack (K8s)
 - Docker / docker-compose
+- `kubeseal` CLI (`brew install kubeseal`)
 - `/etc/hosts`:
 ```
 127.0.0.1 minio.local minio-api.local mlflow.local airflow.local model.local gitea.local argocd.local
@@ -44,13 +45,14 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.pas
 
 UI: http://argocd.local:30448 (admin / <пароль выше>)
 
-## 4. Secrets (вручную, не в git)
+## 4. Repo secret (bootstrap — один раз вручную)
 
+ArgoCD нужен доступ к Gitea для первой синхронизации:
 ```bash
-kubectl apply -f minio/secret.yaml
-kubectl apply -f mlflow/secret.yaml
 kubectl apply -f argocd/repo-secret.yaml
 ```
+
+После первого sync ArgoCD будет управлять SealedSecret-версией этого секрета автоматически.
 
 ## 5. App-of-apps (bootstrap ArgoCD)
 
@@ -58,7 +60,8 @@ kubectl apply -f argocd/repo-secret.yaml
 kubectl apply -f argocd/app-of-apps.yaml
 ```
 
-ArgoCD автоматически синхронизирует: minio, mlflow, airflow, serving.
+ArgoCD автоматически синхронизирует: sealed-secrets, minio, mlflow, airflow, serving.
+Sealed Secrets контроллер расшифрует SealedSecrets → создаст обычные Secrets → поды подхватят.
 
 ## 6. ML-образы (локальные)
 
@@ -73,3 +76,21 @@ docker build -t mlflow-custom:v2.19.0 <path-to-mlflow-dockerfile>/
 1. Изменить манифест в клоне этого репозитория
 2. Commit + push в Gitea
 3. ArgoCD автоматически обнаружит изменение и применит его
+
+## Ротация секретов
+
+При необходимости изменить значения секретов:
+```bash
+# Создать обычный Secret → зашифровать → сохранить в репо
+kubectl create secret generic <name> --namespace=<ns> \
+  --from-literal=key=value \
+  --dry-run=client -o yaml | kubeseal --format yaml > <path>/sealed-secret.yaml
+
+# Commit + push — ArgoCD синхронизирует, контроллер расшифрует
+```
+
+При ротации ключа контроллера (re-seal все секреты):
+```bash
+kubeseal --fetch-cert > /tmp/sealed-secrets-cert.pem
+# Пересоздать каждый SealedSecret с новым сертификатом
+```

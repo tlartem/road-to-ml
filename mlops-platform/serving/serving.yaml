@@ -31,9 +31,15 @@ spec:
             - name: MLFLOW_S3_ENDPOINT_URL
               value: "http://minio.minio.svc.cluster.local:9000"
             - name: AWS_ACCESS_KEY_ID
-              value: "minioadmin"
+              valueFrom:
+                secretKeyRef:
+                  name: serving-minio-creds
+                  key: aws-access-key-id
             - name: AWS_SECRET_ACCESS_KEY
-              value: "minioadmin"
+              valueFrom:
+                secretKeyRef:
+                  name: serving-minio-creds
+                  key: aws-secret-access-key
           readinessProbe:
             httpGet:
               path: /health
