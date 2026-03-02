@@ -17,7 +17,7 @@ spec:
         - name: feast
           image: nyc-taxi-model:latest
           imagePullPolicy: Never
-          command: ["sh", "-c", "cd /app/feast && feast apply && exec feast serve --host 0.0.0.0 --port 6566"]
+          command: ["sh", "-c", "cd /app/feast && /app/.venv/bin/feast apply && exec /app/.venv/bin/feast serve --host 0.0.0.0 --port 6566"]
           ports:
             - containerPort: 6566
           volumeMounts:

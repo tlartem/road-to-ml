@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dagster
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: feast-data
+  namespace: dagster
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

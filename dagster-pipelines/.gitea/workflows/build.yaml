@@ -1,0 +1,17 @@
+name: Build Dagster User Code
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build user code image
+        run: |
+          TAG=sha-${GITHUB_SHA::7}
+          docker build -t dagster-user-code:$TAG -t dagster-user-code:latest .
+          echo "Built dagster-user-code:$TAG"

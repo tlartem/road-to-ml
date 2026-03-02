@@ -1,0 +1,91 @@
+## NYC Taxi Data Catalog
+## Describes all tables in the data lake (s3://taxi-lake/)
+
+tables:
+
+  # ── Bronze Layer ──────────────────────────────────────
+  - name: bronze_raw
+    path: s3://taxi-lake/bronze/raw
+    layer: bronze
+    owner: data-engineering
+    description: Raw NYC TLC yellow taxi trip data, downloaded as-is
+    freshness_sla: 24h
+    format: delta
+    columns:
+      tpep_pickup_datetime: {type: timestamp, nullable: false}
+      tpep_dropoff_datetime: {type: timestamp, nullable: false}
+      PULocationID: {type: int, nullable: false, min: 1, max: 263}
+      DOLocationID: {type: int, nullable: false, min: 1, max: 263}
+      trip_distance: {type: float, nullable: false, min: 0}
+      passenger_count: {type: int, min: 0, max: 9}
+      total_amount: {type: float, nullable: false}
+
+  - name: bronze_streaming
+    path: s3://taxi-lake/bronze/streaming
+    layer: bronze
+    owner: data-engineering
+    description: Simulated streaming batches (hourly), partitioned by date
+    freshness_sla: 10m
+    format: delta
+    partition_by: [date]
+    columns:
+      tpep_pickup_datetime: {type: timestamp, nullable: false}
+      tpep_dropoff_datetime: {type: timestamp, nullable: false}
+      PULocationID: {type: int, nullable: false, min: 1, max: 263}
+      DOLocationID: {type: int, nullable: false, min: 1, max: 263}
+      trip_distance: {type: float, nullable: false, min: 0}
+      passenger_count: {type: int, min: 0, max: 9}
+      total_amount: {type: float, nullable: false}
+      date: {type: string, description: "Partition key YYYY-MM-DD"}
+
+  # ── Silver Layer ──────────────────────────────────────
+  - name: silver_trips
+    path: s3://taxi-lake/silver/trips
+    layer: silver
+    owner: ml-engineering
+    description: Cleaned trip data with engineered features, outliers removed
+    freshness_sla: 1h
+    format: delta
+    upstream: [bronze_raw, bronze_streaming]
+    columns:
+      pickup_zone_id: {type: int, nullable: false, min: 1, max: 263}
+      dropoff_zone_id: {type: int, nullable: false, min: 1, max: 263}
+      trip_distance: {type: float, nullable: false, min: 0, max: 100}
+      pickup_hour: {type: int, nullable: false, min: 0, max: 23}
+      pickup_day_of_week: {type: int, nullable: false, min: 0, max: 6}
+      pickup_month: {type: int, nullable: false, min: 1, max: 12}
+      passenger_count: {type: int, nullable: false, min: 0, max: 9}
+      duration_min: {type: float, nullable: false, min: 1, max: 180}
+      total_amount: {type: float, nullable: false, min: 1, max: 500}
+
+  - name: silver_demand
+    path: s3://taxi-lake/silver/demand
+    layer: silver
+    owner: ml-engineering
+    description: Aggregated trip counts per zone per hour
+    freshness_sla: 1h
+    format: delta
+    upstream: [bronze_raw, bronze_streaming]
+    columns:
+      zone_id: {type: int, nullable: false, min: 1, max: 263}
+      pickup_hour: {type: int, nullable: false, min: 0, max: 23}
+      day_of_week: {type: int, nullable: false, min: 0, max: 6}
+      month: {type: int, nullable: false, min: 1, max: 12}
+      trip_count: {type: int, nullable: false, min: 1}
+
+  # ── Gold Layer ────────────────────────────────────────
+  - name: gold_zone_stats
+    path: s3://taxi-lake/gold/zone_stats
+    layer: gold
+    owner: ml-engineering
+    description: Zone-level aggregated statistics for Feature Store
+    freshness_sla: 24h
+    format: delta
+    upstream: [bronze_raw]
+    columns:
+      zone_id: {type: int, nullable: false, unique: true, min: 1, max: 263}
+      zone_avg_fare: {type: float, min: 0}
+      zone_avg_duration_min: {type: float, min: 0}
+      zone_avg_distance: {type: float, min: 0}
+      zone_trip_count: {type: int, min: 0}
+      event_timestamp: {type: timestamp, nullable: false}

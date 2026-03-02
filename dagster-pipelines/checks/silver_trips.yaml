@@ -1,0 +1,26 @@
+min_rows: 100
+columns:
+  pickup_zone_id:
+    nullable: false
+    min: 1
+    max: 263
+  dropoff_zone_id:
+    nullable: false
+    min: 1
+    max: 263
+  trip_distance:
+    nullable: false
+    min: 0
+    max: 100
+  duration_min:
+    nullable: false
+    min: 1
+    max: 180
+  total_amount:
+    nullable: false
+    min: 1
+    max: 500
+  pickup_hour:
+    nullable: false
+    min: 0
+    max: 23

@@ -1,0 +1,17 @@
+min_rows: 100
+columns:
+  zone_id:
+    nullable: false
+    min: 1
+    max: 263
+  pickup_hour:
+    nullable: false
+    min: 0
+    max: 23
+  day_of_week:
+    nullable: false
+    min: 0
+    max: 6
+  trip_count:
+    nullable: false
+    min: 1
