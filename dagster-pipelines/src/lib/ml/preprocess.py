@@ -1,12 +1,16 @@
-"""Feature engineering for NYC Taxi trip prediction models."""
+"""Feature engineering for NYC Taxi trip prediction models.
+
+Uses DuckDB to read and transform Delta tables without loading all raw data into pandas.
+"""
 
 import logging
-import os
 
+import duckdb
 import pandas as pd
+from deltalake import DeltaTable
 from sklearn.model_selection import train_test_split
 
-from src.lib.lake import read_delta, table_uri, write_delta
+from src.lib.lake import storage_options, table_uri, write_delta, table_exists
 from src.lib.quality import validate_and_push
 
 log = logging.getLogger(__name__)
@@ -16,75 +20,61 @@ BRONZE_STREAMING = table_uri("bronze", "streaming")
 SILVER_TRIPS = table_uri("silver", "trips")
 
 
-def load_source_data(data_source="raw"):
-    if data_source == "combined":
-        log.info("Loading combined: bronze/raw + bronze/streaming")
-        raw = read_delta(BRONZE_RAW)
-        streaming = read_delta(BRONZE_STREAMING)
-        return pd.concat([raw, streaming], ignore_index=True)
-    elif data_source == "streaming":
-        log.info("Loading: bronze/streaming")
-        return read_delta(BRONZE_STREAMING)
-    else:
-        log.info("Loading: bronze/raw")
-        return read_delta(BRONZE_RAW)
+def _read_via_duckdb(uri):
+    """Read Delta table and do feature engineering + outlier removal via DuckDB."""
+    dt = DeltaTable(uri, storage_options=storage_options())
+    arrow_ds = dt.to_pyarrow_dataset()
 
+    con = duckdb.connect()
+    con.register("src", arrow_ds)
 
-def engineer_features(df):
-    df = df.copy()
-    df["tpep_pickup_datetime"] = pd.to_datetime(df["tpep_pickup_datetime"])
-    df["tpep_dropoff_datetime"] = pd.to_datetime(df["tpep_dropoff_datetime"])
+    df = con.execute("""
+        SELECT
+            "PULocationID" AS pickup_zone_id,
+            "DOLocationID" AS dropoff_zone_id,
+            trip_distance,
+            HOUR(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS pickup_hour,
+            DAYOFWEEK(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS pickup_day_of_week,
+            MONTH(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS pickup_month,
+            passenger_count,
+            EPOCH(CAST(tpep_dropoff_datetime AS TIMESTAMP) - CAST(tpep_pickup_datetime AS TIMESTAMP)) / 60.0 AS duration_min,
+            total_amount
+        FROM src
+        WHERE trip_distance > 0 AND trip_distance < 100
+          AND total_amount >= 1 AND total_amount <= 500
+          AND EPOCH(CAST(tpep_dropoff_datetime AS TIMESTAMP) - CAST(tpep_pickup_datetime AS TIMESTAMP)) / 60.0 >= 1
+          AND EPOCH(CAST(tpep_dropoff_datetime AS TIMESTAMP) - CAST(tpep_pickup_datetime AS TIMESTAMP)) / 60.0 <= 180
+          AND "PULocationID" BETWEEN 1 AND 263
+          AND "DOLocationID" BETWEEN 1 AND 263
+    """).fetchdf()
 
-    df["duration_min"] = (
-        df["tpep_dropoff_datetime"] - df["tpep_pickup_datetime"]
-    ).dt.total_seconds() / 60.0
+    con.close()
 
-    df["pickup_hour"] = df["tpep_pickup_datetime"].dt.hour
-    df["pickup_day_of_week"] = df["tpep_pickup_datetime"].dt.dayofweek
-    df["pickup_month"] = df["tpep_pickup_datetime"].dt.month
+    # Fix dayofweek: DuckDB returns 0=Sunday, pandas uses 0=Monday
+    df["pickup_day_of_week"] = (df["pickup_day_of_week"] + 6) % 7
 
-    df = df.rename(columns={
-        "PULocationID": "pickup_zone_id",
-        "DOLocationID": "dropoff_zone_id",
-    })
-
-    feature_cols = [
-        "pickup_zone_id", "dropoff_zone_id", "trip_distance",
-        "pickup_hour", "pickup_day_of_week", "pickup_month",
-        "passenger_count",
-    ]
-    target_cols = ["duration_min", "total_amount"]
-
-    keep_cols = feature_cols + target_cols
-    df = df[[c for c in keep_cols if c in df.columns]].copy()
-    return df, feature_cols, target_cols
-
-
-def remove_outliers(df):
-    before = len(df)
-    df = df[(df["duration_min"] >= 1) & (df["duration_min"] <= 180)]
-    df = df[(df["trip_distance"] > 0) & (df["trip_distance"] < 100)]
-    df = df[(df["total_amount"] >= 1) & (df["total_amount"] <= 500)]
     if "passenger_count" in df.columns:
         df = df[(df["passenger_count"] >= 0) & (df["passenger_count"] <= 9)]
-    after = len(df)
-    log.info("Removed %d outliers (%.1f%%), kept %d rows",
-             before - after, 100 * (before - after) / before, after)
+
+    df = df.dropna()
     return df
 
 
 def run(data_source="raw"):
     log.info("Data source: %s", data_source)
-    df = load_source_data(data_source)
-    log.info("Total rows: %d", len(df))
 
-    log.info("Engineering features...")
-    df, feature_cols, target_cols = engineer_features(df)
-    df = df.dropna(subset=feature_cols + target_cols)
-    log.info("After dropping NaN: %d rows", len(df))
+    frames = []
+    if data_source in ("raw", "combined"):
+        log.info("Reading bronze/raw via DuckDB...")
+        frames.append(_read_via_duckdb(BRONZE_RAW))
 
-    log.info("Removing outliers...")
-    df = remove_outliers(df)
+    if data_source in ("streaming", "combined"):
+        if table_exists(BRONZE_STREAMING):
+            log.info("Reading bronze/streaming via DuckDB...")
+            frames.append(_read_via_duckdb(BRONZE_STREAMING))
+
+    df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+    log.info("Total cleaned rows: %d", len(df))
 
     train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
     log.info("Train: %d rows, Test: %d rows", len(train_df), len(test_df))

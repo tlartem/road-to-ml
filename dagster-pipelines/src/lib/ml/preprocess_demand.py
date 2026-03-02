@@ -1,12 +1,16 @@
-"""Preprocess data for demand prediction model."""
+"""Preprocess data for demand prediction model.
+
+Uses DuckDB to aggregate directly from Delta tables.
+"""
 
 import logging
-import os
 
+import duckdb
 import pandas as pd
+from deltalake import DeltaTable
 from sklearn.model_selection import train_test_split
 
-from src.lib.lake import read_delta, table_uri, write_delta
+from src.lib.lake import storage_options, table_uri, write_delta, table_exists
 from src.lib.quality import validate_and_push
 
 log = logging.getLogger(__name__)
@@ -16,49 +20,60 @@ BRONZE_STREAMING = table_uri("bronze", "streaming")
 SILVER_DEMAND = table_uri("silver", "demand")
 
 
-def load_source_data(data_source="raw"):
-    if data_source == "combined":
-        log.info("Loading combined: bronze/raw + bronze/streaming")
-        raw = read_delta(BRONZE_RAW)
-        streaming = read_delta(BRONZE_STREAMING)
-        return pd.concat([raw, streaming], ignore_index=True)
-    elif data_source == "streaming":
-        log.info("Loading: bronze/streaming")
-        return read_delta(BRONZE_STREAMING)
-    else:
-        log.info("Loading: bronze/raw")
-        return read_delta(BRONZE_RAW)
+def _aggregate_via_duckdb(uri):
+    """Aggregate demand (zone, date, hour) → trip_count via DuckDB."""
+    dt = DeltaTable(uri, storage_options=storage_options())
+    arrow_ds = dt.to_pyarrow_dataset()
 
+    con = duckdb.connect()
+    con.register("src", arrow_ds)
 
-def aggregate_demand(df):
-    df = df.copy()
-    df["tpep_pickup_datetime"] = pd.to_datetime(df["tpep_pickup_datetime"])
-    df["pickup_date"] = df["tpep_pickup_datetime"].dt.date
-    df["pickup_hour"] = df["tpep_pickup_datetime"].dt.hour
+    df = con.execute("""
+        SELECT
+            "PULocationID" AS zone_id,
+            HOUR(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS pickup_hour,
+            DAYOFWEEK(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS day_of_week,
+            MONTH(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS month,
+            COUNT(*) AS trip_count
+        FROM src
+        WHERE "PULocationID" BETWEEN 1 AND 263
+        GROUP BY zone_id,
+                 HOUR(CAST(tpep_pickup_datetime AS TIMESTAMP)),
+                 DAYOFWEEK(CAST(tpep_pickup_datetime AS TIMESTAMP)),
+                 MONTH(CAST(tpep_pickup_datetime AS TIMESTAMP)),
+                 CAST(tpep_pickup_datetime AS DATE)
+    """).fetchdf()
 
-    demand = (
-        df.groupby(["PULocationID", "pickup_date", "pickup_hour"])
-        .size()
-        .reset_index(name="trip_count")
-    )
-    demand = demand.rename(columns={"PULocationID": "zone_id"})
+    con.close()
 
-    demand["pickup_date"] = pd.to_datetime(demand["pickup_date"])
-    demand["day_of_week"] = demand["pickup_date"].dt.dayofweek
-    demand["month"] = demand["pickup_date"].dt.month
-    demand = demand.drop("pickup_date", axis=1)
+    # Fix dayofweek: DuckDB returns 0=Sunday, pandas uses 0=Monday
+    df["day_of_week"] = (df["day_of_week"] + 6) % 7
 
-    log.info("Demand data: %d rows (zone-hour combinations)", len(demand))
-    return demand
+    return df
 
 
 def run(data_source="raw"):
     log.info("Data source: %s", data_source)
-    df = load_source_data(data_source)
-    log.info("Total raw rows: %d", len(df))
 
-    log.info("Aggregating demand...")
-    demand = aggregate_demand(df)
+    frames = []
+    if data_source in ("raw", "combined"):
+        log.info("Aggregating demand from bronze/raw via DuckDB...")
+        frames.append(_aggregate_via_duckdb(BRONZE_RAW))
+
+    if data_source in ("streaming", "combined"):
+        if table_exists(BRONZE_STREAMING):
+            log.info("Aggregating demand from bronze/streaming via DuckDB...")
+            frames.append(_aggregate_via_duckdb(BRONZE_STREAMING))
+
+    demand = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+    # Re-aggregate if combined (same zone-date-hour from both sources)
+    if len(frames) > 1:
+        demand = demand.groupby(["zone_id", "pickup_hour", "day_of_week", "month"]).agg(
+            trip_count=("trip_count", "sum")
+        ).reset_index()
+
+    log.info("Demand data: %d rows", len(demand))
 
     train_df, test_df = train_test_split(demand, test_size=0.2, random_state=42)
     log.info("Train: %d rows, Test: %d rows", len(train_df), len(test_df))
