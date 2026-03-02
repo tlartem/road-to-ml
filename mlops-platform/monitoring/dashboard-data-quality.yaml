@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-data-quality
+  namespace: monitoring
+data:
+  data-quality.json: |
+    {
+      "annotations": {"list": []},
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "Data Quality Status by Table",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "data_quality_passed",
+              "legendFormat": "{{table}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {"options": {"0": {"text": "FAIL", "color": "red"}}, "type": "value"},
+                {"options": {"1": {"text": "PASS", "color": "green"}}, "type": "value"}
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "red", "value": null},
+                  {"color": "green", "value": 1}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "Checks Passed vs Failed",
+          "type": "bargauge",
+          "gridPos": {"h": 6, "w": 12, "x": 0, "y": 4},
+          "targets": [
+            {
+              "expr": "data_quality_checks_passed",
+              "legendFormat": "{{table}} passed"
+            },
+            {
+              "expr": "data_quality_checks_failed",
+              "legendFormat": "{{table}} failed"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "Row Count by Table",
+          "type": "stat",
+          "gridPos": {"h": 6, "w": 12, "x": 12, "y": 4},
+          "targets": [
+            {
+              "expr": "data_quality_rows_total",
+              "legendFormat": "{{table}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            }
+          }
+        },
+        {
+          "title": "Data Freshness (bronze.streaming)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+          "targets": [
+            {
+              "expr": "time() - data_freshness_timestamp{table=\"bronze.streaming\"}",
+              "legendFormat": "seconds since last update"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 300},
+                  {"color": "red", "value": 600}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "Quality Status Over Time",
+          "type": "state-timeline",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+          "targets": [
+            {
+              "expr": "data_quality_passed",
+              "legendFormat": "{{table}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {"options": {"0": {"text": "FAIL", "color": "red"}}, "type": "value"},
+                {"options": {"1": {"text": "PASS", "color": "green"}}, "type": "value"}
+              ]
+            }
+          }
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["data-quality", "delta-lake"],
+      "templating": {"list": []},
+      "time": {"from": "now-6h", "to": "now"},
+      "title": "Data Quality",
+      "uid": "data-quality-dashboard"
+    }

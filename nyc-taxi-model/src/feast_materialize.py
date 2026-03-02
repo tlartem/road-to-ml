@@ -31,12 +31,12 @@ def run(cmd):
 def main():
     # Apply feature definitions (create/update registry)
     log.info("Applying Feast feature definitions...")
-    run(["feast", "apply"])
+    run(["/app/.venv/bin/feast", "apply"])
 
     # Materialize to online store
     end_date = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
     log.info("Materializing to online store (end_date=%s)...", end_date)
-    run(["feast", "materialize-incremental", end_date])
+    run(["/app/.venv/bin/feast", "materialize-incremental", end_date])
 
     log.info("Feast materialization complete!")
 

@@ -1,0 +1,12 @@
+min_rows: 1
+columns:
+  tpep_pickup_datetime:
+    nullable: false
+  tpep_dropoff_datetime:
+    nullable: false
+  PULocationID:
+    nullable: false
+  DOLocationID:
+    nullable: false
+  trip_distance:
+    nullable: false

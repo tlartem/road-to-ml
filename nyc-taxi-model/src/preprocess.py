@@ -1,19 +1,23 @@
 """Feature engineering for NYC Taxi trip prediction models.
 
-Reads raw Parquet from MinIO taxi-raw/, creates features, removes outliers,
-saves train/test to taxi-processed/ for duration and fare models.
+Reads from Delta Lake bronze → cleans, engineers features, removes outliers →
+writes to Delta Lake silver/trips.
+
+DATA_SOURCE env var:
+  "raw"       — bronze/raw only (initial training)
+  "streaming" — bronze/streaming only (retrain on fresh data)
+  "combined"  — bronze/raw + bronze/streaming (retrain with full history)
 """
 
-import io
 import logging
 import os
 import sys
 
-import boto3
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 from sklearn.model_selection import train_test_split
+
+from lake import read_delta, table_uri, write_delta
+from quality import validate_and_push
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,65 +26,30 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-RAW_BUCKET = "taxi-raw"
-STREAM_BUCKET = "taxi-streaming"
-PROCESSED_BUCKET = "taxi-processed"
-DATA_SOURCE = os.environ.get("DATA_SOURCE", "raw")  # "raw" or "streaming"
-TRAIN_MONTHS = os.environ.get("TRAIN_MONTHS", "2024-01,2024-02").split(",")
+DATA_SOURCE = os.environ.get("DATA_SOURCE", "raw")
+
+BRONZE_RAW = table_uri("bronze", "raw")
+BRONZE_STREAMING = table_uri("bronze", "streaming")
+SILVER_TRIPS = table_uri("silver", "trips")
 
 
-def get_s3():
-    return boto3.client(
-        "s3",
-        endpoint_url=os.environ["MLFLOW_S3_ENDPOINT_URL"],
-        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-    )
-
-
-def ensure_bucket(s3, bucket):
-    try:
-        s3.head_bucket(Bucket=bucket)
-    except s3.exceptions.ClientError:
-        s3.create_bucket(Bucket=bucket)
-        log.info("Created bucket: %s", bucket)
-
-
-def load_raw_data(s3):
-    if DATA_SOURCE == "streaming":
-        return load_streaming_data(s3)
-    frames = []
-    for month in TRAIN_MONTHS:
-        key = f"yellow_tripdata_{month}.parquet"
-        log.info("Loading s3://%s/%s ...", RAW_BUCKET, key)
-        resp = s3.get_object(Bucket=RAW_BUCKET, Key=key)
-        df = pd.read_parquet(io.BytesIO(resp["Body"].read()))
-        log.info("  %d rows", len(df))
-        frames.append(df)
-    return pd.concat(frames, ignore_index=True)
-
-
-def load_streaming_data(s3):
-    """Load all parquet files from streaming bucket."""
-    log.info("Loading streaming data from s3://%s/", STREAM_BUCKET)
-    paginator = s3.get_paginator("list_objects_v2")
-    keys = []
-    for page in paginator.paginate(Bucket=STREAM_BUCKET):
-        for obj in page.get("Contents", []):
-            if obj["Key"].endswith(".parquet"):
-                keys.append(obj["Key"])
-    if not keys:
-        raise RuntimeError(f"No parquet files in s3://{STREAM_BUCKET}/")
-    log.info("Found %d streaming files", len(keys))
-    frames = []
-    for key in keys:
-        resp = s3.get_object(Bucket=STREAM_BUCKET, Key=key)
-        frames.append(pd.read_parquet(io.BytesIO(resp["Body"].read())))
-    return pd.concat(frames, ignore_index=True)
+def load_source_data():
+    """Load data from the configured source."""
+    if DATA_SOURCE == "combined":
+        log.info("Loading combined: bronze/raw + bronze/streaming")
+        raw = read_delta(BRONZE_RAW)
+        streaming = read_delta(BRONZE_STREAMING)
+        return pd.concat([raw, streaming], ignore_index=True)
+    elif DATA_SOURCE == "streaming":
+        log.info("Loading: bronze/streaming")
+        return read_delta(BRONZE_STREAMING)
+    else:
+        log.info("Loading: bronze/raw")
+        return read_delta(BRONZE_RAW)
 
 
 def engineer_features(df):
-    """Create features from raw taxi data. Keeps both duration and fare targets."""
+    """Create features from raw taxi data."""
     df = df.copy()
 
     df["tpep_pickup_datetime"] = pd.to_datetime(df["tpep_pickup_datetime"])
@@ -102,12 +71,8 @@ def engineer_features(df):
     })
 
     feature_cols = [
-        "pickup_zone_id",
-        "dropoff_zone_id",
-        "trip_distance",
-        "pickup_hour",
-        "pickup_day_of_week",
-        "pickup_month",
+        "pickup_zone_id", "dropoff_zone_id", "trip_distance",
+        "pickup_hour", "pickup_day_of_week", "pickup_month",
         "passenger_count",
     ]
     target_cols = ["duration_min", "total_amount"]
@@ -129,26 +94,15 @@ def remove_outliers(df):
         df = df[(df["passenger_count"] >= 0) & (df["passenger_count"] <= 9)]
 
     after = len(df)
-    log.info("Removed %d outliers (%.1f%%), kept %d rows", before - after, 100 * (before - after) / before, after)
+    log.info("Removed %d outliers (%.1f%%), kept %d rows",
+             before - after, 100 * (before - after) / before, after)
     return df
 
 
-def upload_parquet(s3, df, key):
-    buf = io.BytesIO()
-    table = pa.Table.from_pandas(df)
-    pq.write_table(table, buf)
-    buf.seek(0)
-    s3.put_object(Bucket=PROCESSED_BUCKET, Key=key, Body=buf.getvalue())
-    log.info("Uploaded s3://%s/%s", PROCESSED_BUCKET, key)
-
-
 def main():
-    s3 = get_s3()
-    ensure_bucket(s3, PROCESSED_BUCKET)
-
-    log.info("Loading raw data for months: %s", TRAIN_MONTHS)
-    df = load_raw_data(s3)
-    log.info("Total raw rows: %d", len(df))
+    log.info("Data source: %s", DATA_SOURCE)
+    df = load_source_data()
+    log.info("Total rows: %d", len(df))
 
     log.info("Engineering features...")
     df, feature_cols, target_cols = engineer_features(df)
@@ -162,16 +116,15 @@ def main():
     train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
     log.info("Train: %d rows, Test: %d rows", len(train_df), len(test_df))
 
-    # Save shared dataset (used by both duration and fare models)
-    for name, data in [("train.parquet", train_df), ("test.parquet", test_df)]:
-        upload_parquet(s3, data, f"trips/{name}")
-    log.info("Saved to s3://%s/trips/", PROCESSED_BUCKET)
+    # Validate silver data
+    validate_and_push(train_df, "silver_trips")
 
-    # Also save to legacy path for backward compat
-    for name, data in [("train.parquet", train_df), ("test.parquet", test_df)]:
-        upload_parquet(s3, data, f"duration/{name}")
+    # Write to Delta Lake silver/trips (overwrite — full rebuild)
+    combined = pd.concat([train_df, test_df], ignore_index=True)
+    combined["split"] = ["train"] * len(train_df) + ["test"] * len(test_df)
+    write_delta(combined, SILVER_TRIPS, mode="overwrite")
 
-    log.info("Preprocessing complete!")
+    log.info("Preprocessing complete → %s", SILVER_TRIPS)
 
 
 if __name__ == "__main__":

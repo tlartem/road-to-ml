@@ -1,0 +1,17 @@
+min_rows: 1
+columns:
+  zone_id:
+    nullable: false
+    unique: true
+    min: 1
+    max: 263
+  event_timestamp:
+    nullable: false
+  zone_avg_fare:
+    min: 0
+  zone_avg_duration_min:
+    min: 0
+  zone_avg_distance:
+    min: 0
+  zone_trip_count:
+    min: 0

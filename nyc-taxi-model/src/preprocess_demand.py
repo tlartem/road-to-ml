@@ -1,20 +1,20 @@
 """Preprocess data for demand prediction model.
 
-Aggregates trips by (zone_id, date, hour) → trip_count.
-Features: zone_id, hour, day_of_week, month.
-Target: trip_count.
+Reads from Delta Lake bronze → aggregates by (zone, date, hour) →
+writes to Delta Lake silver/demand.
+
+DATA_SOURCE: "raw", "streaming", or "combined"
 """
 
-import io
 import logging
 import os
 import sys
 
-import boto3
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 from sklearn.model_selection import train_test_split
+
+from lake import read_delta, table_uri, write_delta
+from quality import validate_and_push
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,53 +23,25 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-RAW_BUCKET = "taxi-raw"
-STREAM_BUCKET = "taxi-streaming"
-PROCESSED_BUCKET = "taxi-processed"
-DATA_SOURCE = os.environ.get("DATA_SOURCE", "raw")  # "raw" or "streaming"
-TRAIN_MONTHS = os.environ.get("TRAIN_MONTHS", "2024-01,2024-02").split(",")
+DATA_SOURCE = os.environ.get("DATA_SOURCE", "raw")
+
+BRONZE_RAW = table_uri("bronze", "raw")
+BRONZE_STREAMING = table_uri("bronze", "streaming")
+SILVER_DEMAND = table_uri("silver", "demand")
 
 
-def get_s3():
-    return boto3.client(
-        "s3",
-        endpoint_url=os.environ["MLFLOW_S3_ENDPOINT_URL"],
-        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-    )
-
-
-def load_raw_data(s3):
-    if DATA_SOURCE == "streaming":
-        return load_streaming_data(s3)
-    frames = []
-    for month in TRAIN_MONTHS:
-        key = f"yellow_tripdata_{month}.parquet"
-        log.info("Loading s3://%s/%s ...", RAW_BUCKET, key)
-        resp = s3.get_object(Bucket=RAW_BUCKET, Key=key)
-        df = pd.read_parquet(io.BytesIO(resp["Body"].read()))
-        log.info("  %d rows", len(df))
-        frames.append(df)
-    return pd.concat(frames, ignore_index=True)
-
-
-def load_streaming_data(s3):
-    """Load all parquet files from streaming bucket."""
-    log.info("Loading streaming data from s3://%s/", STREAM_BUCKET)
-    paginator = s3.get_paginator("list_objects_v2")
-    keys = []
-    for page in paginator.paginate(Bucket=STREAM_BUCKET):
-        for obj in page.get("Contents", []):
-            if obj["Key"].endswith(".parquet"):
-                keys.append(obj["Key"])
-    if not keys:
-        raise RuntimeError(f"No parquet files in s3://{STREAM_BUCKET}/")
-    log.info("Found %d streaming files", len(keys))
-    frames = []
-    for key in keys:
-        resp = s3.get_object(Bucket=STREAM_BUCKET, Key=key)
-        frames.append(pd.read_parquet(io.BytesIO(resp["Body"].read())))
-    return pd.concat(frames, ignore_index=True)
+def load_source_data():
+    if DATA_SOURCE == "combined":
+        log.info("Loading combined: bronze/raw + bronze/streaming")
+        raw = read_delta(BRONZE_RAW)
+        streaming = read_delta(BRONZE_STREAMING)
+        return pd.concat([raw, streaming], ignore_index=True)
+    elif DATA_SOURCE == "streaming":
+        log.info("Loading: bronze/streaming")
+        return read_delta(BRONZE_STREAMING)
+    else:
+        log.info("Loading: bronze/raw")
+        return read_delta(BRONZE_RAW)
 
 
 def aggregate_demand(df):
@@ -91,19 +63,15 @@ def aggregate_demand(df):
     demand["day_of_week"] = demand["pickup_date"].dt.dayofweek
     demand["month"] = demand["pickup_date"].dt.month
 
-    # Drop date (not a model feature)
     demand = demand.drop("pickup_date", axis=1)
 
     log.info("Demand data: %d rows (zone-hour combinations)", len(demand))
-    log.info("Trip count stats:\n%s", demand["trip_count"].describe())
     return demand
 
 
 def main():
-    s3 = get_s3()
-
-    log.info("Loading raw data for months: %s", TRAIN_MONTHS)
-    df = load_raw_data(s3)
+    log.info("Data source: %s", DATA_SOURCE)
+    df = load_source_data()
     log.info("Total raw rows: %d", len(df))
 
     log.info("Aggregating demand...")
@@ -112,15 +80,15 @@ def main():
     train_df, test_df = train_test_split(demand, test_size=0.2, random_state=42)
     log.info("Train: %d rows, Test: %d rows", len(train_df), len(test_df))
 
-    for name, data in [("train.parquet", train_df), ("test.parquet", test_df)]:
-        buf = io.BytesIO()
-        table = pa.Table.from_pandas(data)
-        pq.write_table(table, buf)
-        buf.seek(0)
-        s3.put_object(Bucket=PROCESSED_BUCKET, Key=f"demand/{name}", Body=buf.getvalue())
-        log.info("Uploaded s3://%s/demand/%s", PROCESSED_BUCKET, name)
+    # Validate
+    validate_and_push(train_df, "silver_demand")
 
-    log.info("Demand preprocessing complete!")
+    # Write to Delta Lake
+    combined = pd.concat([train_df, test_df], ignore_index=True)
+    combined["split"] = ["train"] * len(train_df) + ["test"] * len(test_df)
+    write_delta(combined, SILVER_DEMAND, mode="overwrite")
+
+    log.info("Demand preprocessing complete → %s", SILVER_DEMAND)
 
 
 if __name__ == "__main__":

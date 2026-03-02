@@ -261,10 +261,10 @@ spec:
               mountPath: /var/lib/grafana/dashboards
           resources:
             requests:
-              memory: "64Mi"
-              cpu: "50m"
-            limits:
               memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
       volumes:
         - name: datasources
           configMap:
@@ -283,6 +283,8 @@ spec:
                   name: grafana-dashboard-kube-state
               - configMap:
                   name: grafana-dashboard-ml-drift
+              - configMap:
+                  name: grafana-dashboard-data-quality
 
 ---
 apiVersion: v1

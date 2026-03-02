@@ -8,3 +8,7 @@ psycopg2-binary==2.9.11
 feast
 evidently
 requests
+deltalake
+pandera
+duckdb
+pyyaml

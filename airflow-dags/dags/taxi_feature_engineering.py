@@ -12,6 +12,8 @@ from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
 from kubernetes.client import models as k8s
 
+from datasets import GOLD_ZONE_STATS
+
 ENV_VARS = [
     k8s.V1EnvVar(name="MLFLOW_S3_ENDPOINT_URL", value="http://minio.minio.svc.cluster.local:9000"),
     k8s.V1EnvVar(name="AWS_ACCESS_KEY_ID", value="minioadmin"),
@@ -44,13 +46,14 @@ with DAG(
         name="taxi-feature-engineering",
         image="nyc-taxi-model:latest",
         image_pull_policy="Never",
-        cmds=["python", "src/feature_engineering.py"],
+        cmds=[".venv/bin/python", "src/feature_engineering.py"],
         env_vars=ENV_VARS,
         namespace="feast",
         service_account_name="workflow-sa",
         volumes=[FEAST_VOLUME],
         volume_mounts=[FEAST_MOUNT],
         get_logs=True,
+        outlets=[GOLD_ZONE_STATS],
     )
 
     feast_materialize = KubernetesPodOperator(
@@ -58,7 +61,7 @@ with DAG(
         name="taxi-feast-materialize",
         image="nyc-taxi-model:latest",
         image_pull_policy="Never",
-        cmds=["python", "src/feast_materialize.py"],
+        cmds=[".venv/bin/python", "src/feast_materialize.py"],
         namespace="feast",
         service_account_name="workflow-sa",
         volumes=[FEAST_VOLUME],
