@@ -87,9 +87,9 @@ def write_delta(df, uri, mode="append", partition_by=None, schema=None):
 def compact(uri):
     """OPTIMIZE: merge small files in Delta table."""
     dt = DeltaTable(uri, storage_options=storage_options())
-    before = len(dt.files())
+    before = len(dt.file_uris())
     result = dt.optimize.compact()
-    after = len(dt.files())
+    after = len(dt.file_uris())
     log.info("Compacted %s: %d → %d files", uri, before, after)
     return result
 

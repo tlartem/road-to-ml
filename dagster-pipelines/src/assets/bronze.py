@@ -23,8 +23,8 @@ def bronze_raw(
     from src.lib.ml.download_data import run
 
     months = os.environ.get("MONTHS", "2024-01,2024-02,2024-03")
-    df = run(months=months)
-    context.log.info("bronze_raw: %d rows loaded", len(df))
+    total_rows = run(months=months)
+    context.log.info("bronze_raw: %d rows loaded", total_rows)
     return None
 
 

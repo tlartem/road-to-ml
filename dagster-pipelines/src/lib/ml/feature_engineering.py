@@ -1,11 +1,16 @@
-"""Compute zone-level aggregated features from bronze data."""
+"""Compute zone-level aggregated features from bronze data.
+
+Uses DuckDB to aggregate directly from Delta table without loading all rows into pandas.
+"""
 
 import logging
 import os
 
+import duckdb
 import pandas as pd
+from deltalake import DeltaTable
 
-from src.lib.lake import read_delta, table_uri, write_delta
+from src.lib.lake import storage_options, table_uri, write_delta
 from src.lib.quality import validate_and_push
 
 log = logging.getLogger(__name__)
@@ -15,51 +20,47 @@ GOLD_ZONE_STATS = table_uri("gold", "zone_stats")
 FEAST_DATA_DIR = "/feast-data/features"
 
 
-def compute_zone_stats(df):
-    """Compute per-zone aggregated statistics."""
-    df = df.copy()
-    df["tpep_pickup_datetime"] = pd.to_datetime(df["tpep_pickup_datetime"])
-    df["tpep_dropoff_datetime"] = pd.to_datetime(df["tpep_dropoff_datetime"])
-
-    df["duration_min"] = (
-        df["tpep_dropoff_datetime"] - df["tpep_pickup_datetime"]
-    ).dt.total_seconds() / 60.0
-
-    mask = (
-        (df["duration_min"] >= 1) & (df["duration_min"] <= 180)
-        & (df["trip_distance"] > 0) & (df["trip_distance"] < 100)
-        & (df["total_amount"] > 0) & (df["total_amount"] < 500)
-        & (df["PULocationID"] >= 1) & (df["PULocationID"] <= 263)
-    )
-    df = df[mask]
-    log.info("Filtered to %d reasonable trips", len(df))
-
-    stats = df.groupby("PULocationID").agg(
-        zone_avg_fare=("total_amount", "mean"),
-        zone_avg_duration_min=("duration_min", "mean"),
-        zone_avg_distance=("trip_distance", "mean"),
-        zone_trip_count=("PULocationID", "count"),
-    ).reset_index()
-
-    stats = stats.rename(columns={"PULocationID": "zone_id"})
-
-    stats["event_timestamp"] = pd.Timestamp(
-        df["tpep_pickup_datetime"].max().date()
-    )
-
-    for col in ["zone_avg_fare", "zone_avg_duration_min", "zone_avg_distance"]:
-        stats[col] = stats[col].round(2)
-
-    log.info("Computed stats for %d zones", len(stats))
-    return stats
-
-
 def run():
-    log.info("Loading data from %s", BRONZE_RAW)
-    df = read_delta(BRONZE_RAW)
-    log.info("Total raw rows: %d", len(df))
+    log.info("Computing zone stats from %s via DuckDB", BRONZE_RAW)
 
-    zone_stats = compute_zone_stats(df)
+    dt = DeltaTable(BRONZE_RAW, storage_options=storage_options())
+    arrow_dataset = dt.to_pyarrow_dataset()
+
+    con = duckdb.connect()
+    con.register("bronze_raw", arrow_dataset)
+
+    zone_stats = con.execute("""
+        WITH trips AS (
+            SELECT
+                "PULocationID" AS zone_id,
+                total_amount,
+                trip_distance,
+                EPOCH(CAST(tpep_dropoff_datetime AS TIMESTAMP) - CAST(tpep_pickup_datetime AS TIMESTAMP)) / 60.0 AS duration_min,
+                tpep_pickup_datetime
+            FROM bronze_raw
+            WHERE trip_distance > 0 AND trip_distance < 100
+              AND total_amount > 0 AND total_amount < 500
+              AND "PULocationID" >= 1 AND "PULocationID" <= 263
+        ),
+        filtered AS (
+            SELECT * FROM trips
+            WHERE duration_min >= 1 AND duration_min <= 180
+        )
+        SELECT
+            zone_id,
+            ROUND(AVG(total_amount), 2) AS zone_avg_fare,
+            ROUND(AVG(duration_min), 2) AS zone_avg_duration_min,
+            ROUND(AVG(trip_distance), 2) AS zone_avg_distance,
+            COUNT(*) AS zone_trip_count,
+            MAX(tpep_pickup_datetime)::DATE::TIMESTAMP AS event_timestamp
+        FROM filtered
+        GROUP BY zone_id
+        ORDER BY zone_id
+    """).fetchdf()
+
+    con.close()
+
+    log.info("Computed stats for %d zones", len(zone_stats))
 
     validate_and_push(zone_stats, "gold_zone_stats")
     write_delta(zone_stats, GOLD_ZONE_STATS, mode="overwrite")

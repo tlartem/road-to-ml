@@ -17,9 +17,9 @@ BRONZE_RAW = table_uri("bronze", "raw")
 
 def run(months: str = "2024-01,2024-02,2024-03"):
     months_list = months.split(",")
-    all_frames = []
+    total_rows = 0
 
-    for month in months_list:
+    for i, month in enumerate(months_list):
         filename = f"yellow_tripdata_{month}.parquet"
         url = f"{BASE_URL}/{filename}"
         local_path = f"/tmp/{filename}"
@@ -30,15 +30,17 @@ def run(months: str = "2024-01,2024-02,2024-03"):
         log.info("Downloaded %.1f MB", size_mb)
 
         df = pd.read_parquet(local_path)
-        log.info("  %d rows", len(df))
-        all_frames.append(df)
         os.remove(local_path)
+        log.info("  %s: %d rows", month, len(df))
 
-    combined = pd.concat(all_frames, ignore_index=True)
-    log.info("Total: %d rows from %d months", len(combined), len(months_list))
+        validate_and_push(df, "bronze_raw", fail_on_error=False)
 
-    validate_and_push(combined, "bronze_raw")
-    write_delta(combined, BRONZE_RAW, mode="overwrite")
+        # First month: overwrite, rest: append
+        mode = "overwrite" if i == 0 else "append"
+        write_delta(df, BRONZE_RAW, mode=mode)
+        total_rows += len(df)
 
-    log.info("All data loaded into %s", BRONZE_RAW)
-    return combined
+        del df  # free memory before next month
+
+    log.info("Total: %d rows from %d months → %s", total_rows, len(months_list), BRONZE_RAW)
+    return total_rows

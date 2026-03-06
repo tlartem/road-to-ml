@@ -5,13 +5,97 @@ metadata:
   namespace: argocd
 spec:
   project: default
-  source:
-    repoURL: http://host.docker.internal:3000/root/mlops-platform.git
-    targetRevision: main
-    path: dagster
+  sources:
+    # Source 1: Dagster Helm chart (ArgoCD renders directly)
+    - repoURL: https://dagster-io.github.io/helm
+      chart: dagster
+      targetRevision: "*"
+      helm:
+        valuesObject:
+          dagsterWebserver:
+            replicaCount: 1
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 512Mi
+
+          dagsterDaemon:
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 512Mi
+
+          dagster-user-deployments:
+            enabled: true
+            deployments:
+              - name: user-code
+                image:
+                  repository: dagster-user-code
+                  tag: latest
+                  pullPolicy: Never
+                dagsterApiGrpcArgs:
+                  - "-m"
+                  - "src.definitions"
+                port: 3030
+                includeConfigInLaunchedRuns:
+                  enabled: true
+                resources:
+                  requests:
+                    cpu: 200m
+                    memory: 2Gi
+                  limits:
+                    memory: 6Gi
+                envSecrets: []
+                envConfigMaps: []
+                env:
+                  - name: MLFLOW_S3_ENDPOINT_URL
+                    value: "http://minio.minio.svc.cluster.local:9000"
+                  - name: AWS_ACCESS_KEY_ID
+                    value: "minioadmin"
+                  - name: AWS_SECRET_ACCESS_KEY
+                    value: "minioadmin"
+                  - name: MLFLOW_TRACKING_URI
+                    value: "http://mlflow.mlflow.svc.cluster.local:5000"
+                  - name: VM_URL
+                    value: "http://victoriametrics.monitoring.svc.cluster.local:8428"
+                  - name: DATA_SOURCE
+                    value: "raw"
+                volumes:
+                  - name: feast-data
+                    persistentVolumeClaim:
+                      claimName: feast-data
+                volumeMounts:
+                  - name: feast-data
+                    mountPath: /feast-data
+
+          postgresql:
+            enabled: true
+            auth:
+              username: dagster
+              password: dagster
+              database: dagster
+
+          runLauncher:
+            type: K8sRunLauncher
+
+          ingress:
+            enabled: false
+
+    # Source 2: Extra manifests (PVC, ingress, RBAC)
+    - repoURL: http://host.docker.internal:3000/root/mlops-platform.git
+      targetRevision: main
+      path: dagster
+
   destination:
     server: https://kubernetes.default.svc
+    namespace: dagster
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

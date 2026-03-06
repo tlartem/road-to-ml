@@ -1,0 +1,271 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-ml-health
+  namespace: monitoring
+data:
+  ml-health.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "name": "Retrain Events",
+            "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+            "enable": true,
+            "expr": "changes(model_retrain_timestamp[5m]) > 0",
+            "tagKeys": "model",
+            "titleFormat": "Retrain",
+            "iconColor": "orange"
+          }
+        ]
+      },
+      "description": "Unified ML Health — model performance, drift, data quality",
+      "editable": true,
+      "id": null,
+      "title": "ML Health",
+      "uid": "ml-health",
+      "tags": ["ml", "health", "models", "drift", "quality"],
+      "timezone": "browser",
+      "refresh": "1m",
+      "time": {"from": "now-12h", "to": "now"},
+      "panels": [
+
+        {"id": 100, "type": "row", "title": "Model Performance", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false, "panels": []},
+
+        {
+          "id": 1,
+          "title": "Duration MAE",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 1},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "model_mae{model=\"taxi-duration\"}", "legendFormat": "MAE"}],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]},
+              "unit": "short",
+              "decimals": 2
+            }
+          },
+          "options": {"graphMode": "area", "colorMode": "background"}
+        },
+        {
+          "id": 2,
+          "title": "Fare MAE",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 1},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "model_mae{model=\"taxi-fare\"}", "legendFormat": "MAE"}],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]},
+              "unit": "short",
+              "decimals": 2
+            }
+          },
+          "options": {"graphMode": "area", "colorMode": "background"}
+        },
+        {
+          "id": 3,
+          "title": "Demand MAE",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 1},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "model_mae{model=\"taxi-demand\"}", "legendFormat": "MAE"}],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 3}, {"color": "red", "value": 8}]},
+              "unit": "short",
+              "decimals": 2
+            }
+          },
+          "options": {"graphMode": "area", "colorMode": "background"}
+        },
+
+        {
+          "id": 4,
+          "title": "MAE Over Time",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 5},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [
+            {"expr": "model_mae{model=\"taxi-duration\"}", "legendFormat": "duration"},
+            {"expr": "model_mae{model=\"taxi-fare\"}", "legendFormat": "fare"},
+            {"expr": "model_mae{model=\"taxi-demand\"}", "legendFormat": "demand"}
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {"drawStyle": "line", "lineWidth": 2, "pointSize": 6, "showPoints": "always", "spanNulls": true},
+              "unit": "short",
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "id": 5,
+          "title": "R² Over Time",
+          "type": "timeseries",
+          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 5},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [
+            {"expr": "model_r2{model=\"taxi-duration\"}", "legendFormat": "duration"},
+            {"expr": "model_r2{model=\"taxi-fare\"}", "legendFormat": "fare"},
+            {"expr": "model_r2{model=\"taxi-demand\"}", "legendFormat": "demand"}
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {"drawStyle": "line", "lineWidth": 2, "pointSize": 6, "showPoints": "always", "spanNulls": true},
+              "unit": "percentunit",
+              "min": 0, "max": 1,
+              "decimals": 3
+            }
+          }
+        },
+
+        {"id": 200, "type": "row", "title": "Data Drift", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 12}, "collapsed": false, "panels": []},
+
+        {
+          "id": 6,
+          "title": "Drift Share",
+          "type": "gauge",
+          "gridPos": {"h": 6, "w": 6, "x": 0, "y": 13},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "evidently_drift_share", "legendFormat": "drift share"}],
+          "fieldConfig": {
+            "defaults": {
+              "min": 0, "max": 1,
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.3}, {"color": "red", "value": 0.5}]},
+              "unit": "percentunit"
+            }
+          }
+        },
+        {
+          "id": 7,
+          "title": "Feature Drift Scores",
+          "type": "bargauge",
+          "gridPos": {"h": 6, "w": 8, "x": 6, "y": 13},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "evidently_feature_drift_score", "legendFormat": "{{feature}}"}],
+          "fieldConfig": {
+            "defaults": {
+              "min": 0, "max": 1,
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.05}, {"color": "red", "value": 0.1}]}
+            }
+          },
+          "options": {"orientation": "horizontal", "displayMode": "gradient"}
+        },
+        {
+          "id": 8,
+          "title": "Drift Share Over Time",
+          "type": "timeseries",
+          "gridPos": {"h": 6, "w": 10, "x": 14, "y": 13},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "evidently_drift_share", "legendFormat": "drift share"}],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 20, "spanNulls": true},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.5}]},
+              "unit": "percentunit",
+              "min": 0, "max": 1
+            }
+          }
+        },
+
+        {"id": 300, "type": "row", "title": "Data Quality", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 19}, "collapsed": false, "panels": []},
+
+        {
+          "id": 9,
+          "title": "Quality Status by Table",
+          "type": "state-timeline",
+          "gridPos": {"h": 5, "w": 10, "x": 0, "y": 20},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "data_quality_passed", "legendFormat": "{{table}}"}],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {"type": "value", "options": {"0": {"text": "FAIL", "color": "red"}, "1": {"text": "PASS", "color": "green"}}}
+              ]
+            }
+          }
+        },
+        {
+          "id": 10,
+          "title": "Column Mean Trends (silver_trips)",
+          "type": "timeseries",
+          "gridPos": {"h": 5, "w": 9, "x": 10, "y": 20},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [
+            {"expr": "data_column_mean{table=\"silver_trips\"}", "legendFormat": "{{column}}"}
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {"drawStyle": "line", "lineWidth": 1, "spanNulls": true},
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "id": 11,
+          "title": "Data Freshness",
+          "type": "timeseries",
+          "gridPos": {"h": 5, "w": 5, "x": 19, "y": 20},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "time() - data_freshness_timestamp{table=\"bronze.streaming\"}", "legendFormat": "seconds since update"}],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 300}, {"color": "red", "value": 600}]},
+              "unit": "s"
+            }
+          }
+        },
+
+        {"id": 400, "type": "row", "title": "Training Details", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 25}, "collapsed": false, "panels": []},
+
+        {
+          "id": 12,
+          "title": "Training Dataset Size",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 26},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "model_train_rows", "legendFormat": "{{model}}"}],
+          "fieldConfig": {
+            "defaults": {"unit": "short", "decimals": 0}
+          },
+          "options": {"colorMode": "value", "graphMode": "none"}
+        },
+        {
+          "id": 13,
+          "title": "RMSE Over Time",
+          "type": "timeseries",
+          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 26},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [
+            {"expr": "model_rmse{model=\"taxi-duration\"}", "legendFormat": "duration"},
+            {"expr": "model_rmse{model=\"taxi-fare\"}", "legendFormat": "fare"},
+            {"expr": "model_rmse{model=\"taxi-demand\"}", "legendFormat": "demand"}
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {"drawStyle": "line", "lineWidth": 2, "pointSize": 6, "showPoints": "always", "spanNulls": true},
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "id": 14,
+          "title": "Row Counts by Table",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 26},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "targets": [{"expr": "data_quality_rows_total", "legendFormat": "{{table}}"}],
+          "fieldConfig": {
+            "defaults": {"unit": "short", "decimals": 0}
+          },
+          "options": {"colorMode": "value", "graphMode": "none"}
+        }
+
+      ],
+      "schemaVersion": 39,
+      "templating": {"list": []},
+      "version": 1
+    }

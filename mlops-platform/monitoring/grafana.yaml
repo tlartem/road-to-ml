@@ -285,6 +285,8 @@ spec:
                   name: grafana-dashboard-ml-drift
               - configMap:
                   name: grafana-dashboard-data-quality
+              - configMap:
+                  name: grafana-dashboard-ml-health
 
 ---
 apiVersion: v1

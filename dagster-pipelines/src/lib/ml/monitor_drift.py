@@ -1,4 +1,10 @@
-"""Drift monitoring with Evidently."""
+"""Drift monitoring with Evidently.
+
+Compares reference (sample from silver/trips) vs current (bronze/streaming
+preprocessed the same way) using the same feature columns.
+Both datasets go through identical feature engineering so distributions
+are comparable.
+"""
 
 import json
 import logging
@@ -6,12 +12,13 @@ import os
 from datetime import datetime
 
 import boto3
-import pandas as pd
+import duckdb
 import requests
+from deltalake import DeltaTable
 from evidently import Report
 from evidently.presets import DataDriftPreset
 
-from src.lib.lake import read_delta, table_uri
+from src.lib.lake import storage_options, table_uri, table_exists
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +27,7 @@ BRONZE_STREAMING = table_uri("bronze", "streaming")
 REPORTS_BUCKET = "taxi-reports"
 VM_URL = os.environ.get("VM_URL", "http://victoriametrics.monitoring.svc.cluster.local:8428")
 RETRAIN_THRESHOLD = float(os.environ.get("RETRAIN_THRESHOLD", "0.5"))
+REF_SAMPLE_ROWS = int(os.environ.get("REF_SAMPLE_ROWS", "10000"))
 
 FEATURE_COLS = [
     "trip_distance", "pickup_hour", "pickup_day_of_week",
@@ -43,21 +51,66 @@ def ensure_bucket(s3, bucket):
         s3.create_bucket(Bucket=bucket)
 
 
-def prepare_features(df):
-    df = df.copy()
-    if "tpep_pickup_datetime" in df.columns and "pickup_hour" not in df.columns:
-        df["tpep_pickup_datetime"] = pd.to_datetime(df["tpep_pickup_datetime"])
-        df["pickup_hour"] = df["tpep_pickup_datetime"].dt.hour
-        df["pickup_day_of_week"] = df["tpep_pickup_datetime"].dt.dayofweek
-        df["pickup_month"] = df["tpep_pickup_datetime"].dt.month
+def _load_reference():
+    """Load a random sample from silver/trips via DuckDB.
 
-    if "trip_distance" in df.columns:
-        df = df[(df["trip_distance"] > 0) & (df["trip_distance"] < 100)]
-    if "passenger_count" in df.columns:
-        df = df[(df["passenger_count"] >= 0) & (df["passenger_count"] <= 9)]
+    silver_trips already has preprocessed features (pickup_hour, etc.)
+    so we just sample the columns we need.
+    """
+    opts = storage_options()
+    dt = DeltaTable(SILVER_TRIPS, storage_options=opts)
+    ds = dt.to_pyarrow_dataset()
 
-    cols = [c for c in FEATURE_COLS if c in df.columns]
-    return df[cols].dropna()
+    con = duckdb.connect()
+    con.register("trips", ds)
+
+    cols = ", ".join(FEATURE_COLS)
+    df = con.execute(f"""
+        SELECT {cols}
+        FROM trips
+        WHERE trip_distance > 0 AND trip_distance < 100
+          AND passenger_count >= 0 AND passenger_count <= 9
+        USING SAMPLE {REF_SAMPLE_ROWS} ROWS
+    """).fetchdf()
+
+    con.close()
+
+    # Fix dayofweek if needed (silver_trips already has correct values)
+    return df.dropna()
+
+
+def _load_current():
+    """Load bronze/streaming and apply same feature engineering as preprocess.py.
+
+    bronze_streaming has raw columns (tpep_pickup_datetime, PULocationID, etc.)
+    We extract the same features as silver_trips to make distributions comparable.
+    """
+    opts = storage_options()
+    dt = DeltaTable(BRONZE_STREAMING, storage_options=opts)
+    ds = dt.to_pyarrow_dataset()
+
+    con = duckdb.connect()
+    con.register("streaming", ds)
+
+    df = con.execute("""
+        SELECT
+            trip_distance,
+            HOUR(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS pickup_hour,
+            DAYOFWEEK(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS pickup_day_of_week,
+            MONTH(CAST(tpep_pickup_datetime AS TIMESTAMP)) AS pickup_month,
+            passenger_count
+        FROM streaming
+        WHERE trip_distance > 0 AND trip_distance < 100
+          AND passenger_count >= 0 AND passenger_count <= 9
+          AND "PULocationID" BETWEEN 1 AND 263
+    """).fetchdf()
+
+    con.close()
+
+    # Fix dayofweek: DuckDB 0=Sunday → 0=Monday (same as preprocess.py)
+    df["pickup_day_of_week"] = (df["pickup_day_of_week"] + 6) % 7
+
+    return df.dropna()
 
 
 def extract_metrics(result):
@@ -107,12 +160,15 @@ def push_to_vm(metrics, feature_metrics):
         lines.append(f'evidently_feature_drifted{{feature="{feature}"}} {values["drifted"]}')
 
     body = "\n".join(lines) + "\n"
-    resp = requests.post(
-        f"{VM_URL}/api/v1/import/prometheus",
-        data=body, headers={"Content-Type": "text/plain"}, timeout=10,
-    )
-    resp.raise_for_status()
-    log.info("Metrics pushed to VictoriaMetrics")
+    try:
+        resp = requests.post(
+            f"{VM_URL}/api/v1/import/prometheus",
+            data=body, headers={"Content-Type": "text/plain"}, timeout=10,
+        )
+        resp.raise_for_status()
+        log.info("Metrics pushed to VictoriaMetrics")
+    except Exception as e:
+        log.warning("Failed to push drift metrics: %s", e)
 
 
 def save_report(s3, result):
@@ -133,20 +189,22 @@ def run():
     """Run drift monitoring. Returns (metrics_dict, drift_detected_bool)."""
     s3 = get_s3()
 
-    log.info("Loading reference from %s", SILVER_TRIPS)
-    reference = read_delta(SILVER_TRIPS)
-    ref_features = prepare_features(reference)
-    log.info("Reference: %d rows", len(ref_features))
+    log.info("Loading reference sample (%d rows) from %s", REF_SAMPLE_ROWS, SILVER_TRIPS)
+    ref_features = _load_reference()
+    log.info("Reference: %d rows, columns: %s", len(ref_features), list(ref_features.columns))
+
+    if not table_exists(BRONZE_STREAMING):
+        log.warning("No streaming data yet, skipping drift check")
+        return {}, False
 
     log.info("Loading current from %s", BRONZE_STREAMING)
     try:
-        current_raw = read_delta(BRONZE_STREAMING)
+        curr_features = _load_current()
     except Exception as e:
-        log.warning("No streaming data yet: %s", e)
+        log.warning("Failed to load streaming data: %s", e)
         return {}, False
 
-    curr_features = prepare_features(current_raw)
-    log.info("Current: %d rows", len(curr_features))
+    log.info("Current: %d rows, columns: %s", len(curr_features), list(curr_features.columns))
 
     if len(curr_features) < 100:
         log.warning("Current data too small (%d rows), skipping", len(curr_features))

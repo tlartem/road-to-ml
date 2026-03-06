@@ -1,6 +1,6 @@
 """Dagster Definitions — entry point for the user code server."""
 
-from dagster import Definitions, load_assets_from_modules
+from dagster import Definitions, in_process_executor, load_assets_from_modules
 
 from src.assets import bronze, gold, monitoring, silver, training
 from src.checks import (
@@ -58,6 +58,7 @@ defs = Definitions(
     jobs=all_jobs,
     schedules=all_schedules,
     sensors=all_sensors,
+    executor=in_process_executor,
     resources={
         "minio": MinIOResource(),
         "mlflow_res": MLflowResource(),

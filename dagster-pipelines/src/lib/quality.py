@@ -136,7 +136,7 @@ def validate(df, table_name, checks_file=None):
     return result
 
 
-def push_quality_metrics(result):
+def push_quality_metrics(result, df=None):
     """Push data quality metrics to VictoriaMetrics."""
     lines = [
         f'data_quality_passed{{table="{result.table}"}} {1 if result.success else 0}',
@@ -145,6 +145,16 @@ def push_quality_metrics(result):
         f'data_quality_checks_failed{{table="{result.table}"}} {result.failed}',
         f'data_quality_rows_total{{table="{result.table}"}} {result.rows}',
     ]
+
+    # Push column-level statistics for numeric columns
+    if df is not None:
+        for col in df.select_dtypes(include="number").columns:
+            mean_val = df[col].mean()
+            std_val = df[col].std()
+            if mean_val == mean_val:  # skip NaN
+                lines.append(f'data_column_mean{{table="{result.table}",column="{col}"}} {mean_val:.4f}')
+            if std_val == std_val:
+                lines.append(f'data_column_std{{table="{result.table}",column="{col}"}} {std_val:.4f}')
 
     body = "\n".join(lines) + "\n"
     try:
@@ -163,10 +173,10 @@ def push_quality_metrics(result):
 def validate_and_push(df, table_name, checks_file=None, fail_on_error=True):
     """Validate + push metrics + optionally exit on failure."""
     result = validate(df, table_name, checks_file)
-    push_quality_metrics(result)
+    push_quality_metrics(result, df=df)
 
     if not result.success and fail_on_error:
-        log.error("Data quality check FAILED for %s, aborting", table_name)
-        sys.exit(1)
+        log.error("Data quality check FAILED for %s: %s", table_name, result.failures)
+        raise ValueError(f"Data quality check FAILED for {table_name}: {result.failures}")
 
     return result

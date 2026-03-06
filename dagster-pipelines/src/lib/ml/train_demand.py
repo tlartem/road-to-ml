@@ -1,36 +1,79 @@
-"""Train demand prediction model (LightGBM) and register in MLflow."""
+"""Train demand prediction model (LightGBM) and register in MLflow.
+
+Uses DuckDB to JOIN silver/demand with gold/zone_stats without loading all data into pandas.
+"""
 
 import logging
 import os
+import time
 
+import duckdb
 import lightgbm as lgb
 import mlflow
 import numpy as np
-import pandas as pd
+import requests
+from deltalake import DeltaTable
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from src.lib.lake import read_delta, table_uri
+from src.lib.lake import storage_options, table_uri
 
 log = logging.getLogger(__name__)
 
 SILVER_DEMAND = table_uri("silver", "demand")
 GOLD_ZONE_STATS = table_uri("gold", "zone_stats")
+VM_URL = os.environ.get("VM_URL", "http://victoriametrics.monitoring.svc.cluster.local:8428")
 
-BASE_FEATURES = ["zone_id", "pickup_hour", "day_of_week", "month"]
-ZONE_FEATURES = [
+FEATURE_COLS = [
+    "zone_id", "pickup_hour", "day_of_week", "month",
     "zone_avg_fare", "zone_avg_duration_min", "zone_avg_distance", "zone_trip_count",
 ]
-FEATURE_COLS = BASE_FEATURES + ZONE_FEATURES
 TARGET_COL = "trip_count"
 
 
-def enrich_with_zone_stats(df, zone_stats):
-    zs = zone_stats[["zone_id", "zone_avg_fare", "zone_avg_duration_min",
-                      "zone_avg_distance", "zone_trip_count"]]
-    df = df.merge(zs, on="zone_id", how="left")
-    for col in ZONE_FEATURES:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+def _load_enriched(split_value):
+    """Load demand enriched with zone stats via DuckDB, filtered by split."""
+    opts = storage_options()
+    demand_ds = DeltaTable(SILVER_DEMAND, storage_options=opts).to_pyarrow_dataset()
+    zones_ds = DeltaTable(GOLD_ZONE_STATS, storage_options=opts).to_pyarrow_dataset()
+
+    con = duckdb.connect()
+    con.register("demand", demand_ds)
+    con.register("zones", zones_ds)
+
+    df = con.execute(f"""
+        SELECT
+            d.zone_id, d.pickup_hour, d.day_of_week, d.month, d.trip_count,
+            COALESCE(z.zone_avg_fare, 0) AS zone_avg_fare,
+            COALESCE(z.zone_avg_duration_min, 0) AS zone_avg_duration_min,
+            COALESCE(z.zone_avg_distance, 0) AS zone_avg_distance,
+            COALESCE(z.zone_trip_count, 0) AS zone_trip_count
+        FROM demand d
+        LEFT JOIN zones z ON d.zone_id = z.zone_id
+        WHERE d.split = '{split_value}'
+    """).fetchdf()
+
+    con.close()
     return df
+
+
+def _push_model_metrics(model_name, metrics, train_rows):
+    """Push model performance metrics to VictoriaMetrics."""
+    lines = [
+        f'model_mae{{model="{model_name}"}} {metrics["mae"]:.4f}',
+        f'model_rmse{{model="{model_name}"}} {metrics["rmse"]:.4f}',
+        f'model_r2{{model="{model_name}"}} {metrics["r2"]:.4f}',
+        f'model_train_rows{{model="{model_name}"}} {train_rows}',
+        f'model_retrain_timestamp{{model="{model_name}"}} {time.time():.0f}',
+    ]
+    try:
+        requests.post(
+            f"{VM_URL}/api/v1/import/prometheus",
+            data="\n".join(lines) + "\n",
+            headers={"Content-Type": "text/plain"}, timeout=10,
+        )
+        log.info("Model metrics pushed to VictoriaMetrics for %s", model_name)
+    except Exception as e:
+        log.warning("Failed to push model metrics: %s", e)
 
 
 def promote_if_better(new_mae, model_info):
@@ -62,16 +105,13 @@ def promote_if_better(new_mae, model_info):
 
 
 def run():
-    log.info("Loading silver/demand from Delta Lake...")
-    all_data = read_delta(SILVER_DEMAND)
-    train_df = all_data[all_data["split"] == "train"].drop("split", axis=1)
-    test_df = all_data[all_data["split"] == "test"].drop("split", axis=1)
-    log.info("Train: %d rows, Test: %d rows", len(train_df), len(test_df))
+    log.info("Loading train split via DuckDB (demand + zone_stats JOIN)...")
+    train_df = _load_enriched("train")
+    log.info("Train: %d rows", len(train_df))
 
-    log.info("Loading gold/zone_stats from Delta Lake...")
-    zone_stats = read_delta(GOLD_ZONE_STATS)
-    train_df = enrich_with_zone_stats(train_df, zone_stats)
-    test_df = enrich_with_zone_stats(test_df, zone_stats)
+    log.info("Loading test split via DuckDB...")
+    test_df = _load_enriched("test")
+    log.info("Test: %d rows", len(test_df))
 
     X_train, y_train = train_df[FEATURE_COLS], train_df[TARGET_COL]
     X_test, y_test = test_df[FEATURE_COLS], test_df[TARGET_COL]
@@ -99,6 +139,7 @@ def run():
             "r2": r2_score(y_test, y_pred),
         }
         mlflow.log_metrics(metrics)
+        _push_model_metrics("taxi-demand", metrics, len(train_df))
         for name, value in metrics.items():
             log.info("  %-12s %.4f", name, value)
 
